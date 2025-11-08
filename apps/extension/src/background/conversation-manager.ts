@@ -116,7 +116,7 @@ class ConversationManager {
 			console.log(`[Conversation Manager] 📡 Starting AI SDK stream...`);
 
 			const result = streamText({
-				model: this.anthropic("claude-3-5-sonnet-20241022"),
+				model: this.anthropic("claude-sonnet-4-5-20250929"),
 				prompt,
 				maxTokens: 4096,
 				tools: this.buildTools(tabId),
