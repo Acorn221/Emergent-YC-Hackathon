@@ -52,4 +52,7 @@ dist/
 .turbo
 
 # tanstack
-.tanstack
+.tanstack-e 
+# Environment files
+*.env
+*.env.*
