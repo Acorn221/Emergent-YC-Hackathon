@@ -364,7 +364,7 @@ export default function SidePanel() {
             <div
               className={`rounded border p-3 text-sm ${getMessageStyle(
                 message.type,
-              )} whitespace-pre-wrap leading-relaxed`}
+              )} overflow-wrap-anywhere whitespace-pre-wrap break-words leading-relaxed`}
             >
               <span className="mr-1 text-green-600">&gt;</span>
               {message.content}

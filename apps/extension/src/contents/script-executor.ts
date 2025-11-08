@@ -13,7 +13,7 @@ import {
 	serializeExecutionResult,
 	formatExecutionError,
 	type ConsoleLog,
-} from "~contents-helpers/script-execution-helpers";
+} from "../contents-helpers/script-execution-helpers";
 
 export const config: PlasmoCSConfig = {
 	matches: ["<all_urls>"],

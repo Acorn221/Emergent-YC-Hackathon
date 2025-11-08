@@ -5,7 +5,7 @@
  */
 
 import type { PlasmoMessaging } from "@plasmohq/messaging";
-import { scriptExecutionManager } from "~background/script-execution-manager";
+import { scriptExecutionManager } from "../../background/script-execution-manager";
 
 export interface ConsoleLog {
 	level: "log" | "warn" | "error";
@@ -28,6 +28,11 @@ const handler: PlasmoMessaging.MessageHandler<
 	ScriptExecutionResultRequest,
 	ScriptExecutionResultResponse
 > = async (req, res) => {
+	if (!req.body) {
+		console.warn("[Script Execution Result] ⚠️ No request body");
+		res.send({ success: false });
+		return;
+	}
 	const { id, result, error, logs } = req.body;
 
 	if (!id) {
@@ -42,7 +47,7 @@ const handler: PlasmoMessaging.MessageHandler<
 	if (error) {
 		// Execution failed
 		formattedResult = `ERROR:\n${error}`;
-		
+
 		if (logs && logs.length > 0) {
 			formattedResult += "\n\nConsole logs:\n";
 			formattedResult += logs

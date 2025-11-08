@@ -5,9 +5,9 @@
  */
 
 import type { PlasmoMessaging } from "@plasmohq/messaging";
-import { scriptExecutionManager } from "~background/script-execution-manager";
+import { scriptExecutionManager } from "../../background/script-execution-manager";
 
-export interface GetPendingScriptRequest {}
+export interface GetPendingScriptRequest { }
 
 export interface GetPendingScriptResponse {
 	id: string | null;
