@@ -73,31 +73,56 @@ async function executeScript(id: string, code: string) {
 
 		console.log(`[Script Executor] ✅ Success ${id}`);
 
-		// Send result back
-		await sendToBackgroundViaRelay({
-			name: "script-execution-result",
-			body: {
-				id,
-				result: serialized,
-				logs: interceptor.logs,
-			},
-		});
+		// Send result back - wrap in try-catch to prevent breaking the loop
+		try {
+			await sendToBackgroundViaRelay({
+				name: "script-execution-result",
+				body: {
+					id,
+					result: serialized,
+					logs: interceptor.logs,
+				},
+			});
+			console.log(`[Script Executor] ✅ Sent success result for ${id}`);
+		} catch (sendError) {
+			// If sending fails, log it but don't throw - execution manager will timeout
+			console.error(
+				`[Script Executor] ❌ Failed to send success result for ${id}:`,
+				sendError
+			);
+		}
 	} catch (error) {
-		// Restore console
-		interceptor.restore();
+		// Restore console on error
+		try {
+			interceptor.restore();
+		} catch (restoreError) {
+			console.error(
+				"[Script Executor] Failed to restore console methods:",
+				restoreError
+			);
+		}
 
 		const errorMessage = formatExecutionError(error);
 		console.error(`[Script Executor] ❌ Error in ${id}:`, error);
 
-		// Send error back
-		await sendToBackgroundViaRelay({
-			name: "script-execution-result",
-			body: {
-				id,
-				error: errorMessage,
-				logs: interceptor.logs,
-			},
-		});
+		// Send error back - wrap in try-catch to prevent breaking the loop
+		try {
+			await sendToBackgroundViaRelay({
+				name: "script-execution-result",
+				body: {
+					id,
+					error: errorMessage,
+					logs: interceptor.logs,
+				},
+			});
+			console.log(`[Script Executor] ✅ Sent error result for ${id}`);
+		} catch (sendError) {
+			// If sending fails, log it but don't throw - execution manager will timeout
+			console.error(
+				`[Script Executor] ❌ Failed to send error result for ${id}:`,
+				sendError
+			);
+		}
 	}
 }
 
