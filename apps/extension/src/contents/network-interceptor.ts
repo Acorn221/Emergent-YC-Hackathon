@@ -215,78 +215,78 @@ class InterceptedXHR extends OriginalXHR {
 		this._setupInterception();
 	}
 
-  private _setupInterception() {
-    const startTime = performance.now();
-    this._requestMetadata.startTime = startTime;
+	private _setupInterception() {
+		const startTime = performance.now();
+		this._requestMetadata.startTime = startTime;
 
-    // Capture completion
-    this.addEventListener("loadend", () => {
-      const endTime = performance.now();
-      
-      // Extract response headers
-      const responseHeaders: Record<string, string> = {};
-      const headersString = this.getAllResponseHeaders();
-      if (headersString) {
-        headersString.split("\r\n").forEach(line => {
-          const separatorIndex = line.indexOf(": ");
-          if (separatorIndex > 0) {
-            const key = line.substring(0, separatorIndex);
-            const value = line.substring(separatorIndex + 2);
-            responseHeaders[key] = value;
-          }
-        });
-      }
+		// Capture completion
+		this.addEventListener("loadend", () => {
+			const endTime = performance.now();
 
-      // Get response body
-      let responseBody: string | undefined;
-      try {
-        if (this.responseType === "" || this.responseType === "text") {
-          responseBody = this.responseText;
-        } else if (this.responseType === "json") {
-          responseBody = JSON.stringify(this.response);
-        } else {
-          responseBody = `[${this.responseType}]`;
-        }
-      } catch {
-        responseBody = "[Unable to read response]";
-      }
+			// Extract response headers
+			const responseHeaders: Record<string, string> = {};
+			const headersString = this.getAllResponseHeaders();
+			if (headersString) {
+				headersString.split("\r\n").forEach(line => {
+					const separatorIndex = line.indexOf(": ");
+					if (separatorIndex > 0) {
+						const key = line.substring(0, separatorIndex);
+						const value = line.substring(separatorIndex + 2);
+						responseHeaders[key] = value;
+					}
+				});
+			}
 
-      // Send to background
-      sendToBackgroundViaRelay({
-        name: "cache-network",
-        body: {
-          type: "xhr",
-          request: {
-            url: this._requestMetadata.url,
-            method: this._requestMetadata.method,
-            headers: this._requestMetadata.headers,
-            body: this._requestMetadata.body,
-            timestamp: Date.now(),
-          },
-          response: {
-            status: this.status,
-            statusText: this.statusText,
-            headers: responseHeaders,
-            body: responseBody,
-            contentType: responseHeaders["content-type"],
-          },
-          timing: {
-            startTime,
-            endTime,
-            durationMs: endTime - startTime,
-          },
-        },
-      }).catch(err => {
-        console.error("[Network Interceptor] ❌ Failed to cache XHR:", err);
-      });
-    });
-  }
+			// Get response body
+			let responseBody: string | undefined;
+			try {
+				if (this.responseType === "" || this.responseType === "text") {
+					responseBody = this.responseText;
+				} else if (this.responseType === "json") {
+					responseBody = JSON.stringify(this.response);
+				} else {
+					responseBody = `[${this.responseType}]`;
+				}
+			} catch {
+				responseBody = "[Unable to read response]";
+			}
 
-  open(method: string, url: string | URL, async?: boolean, username?: string | null, password?: string | null): void {
-    this._requestMetadata.method = method.toUpperCase();
-    this._requestMetadata.url = url.toString();
-    return super.open(method, url, async ?? true, username, password);
-  }
+			// Send to background
+			sendToBackgroundViaRelay({
+				name: "cache-network",
+				body: {
+					type: "xhr",
+					request: {
+						url: this._requestMetadata.url,
+						method: this._requestMetadata.method,
+						headers: this._requestMetadata.headers,
+						body: this._requestMetadata.body,
+						timestamp: Date.now(),
+					},
+					response: {
+						status: this.status,
+						statusText: this.statusText,
+						headers: responseHeaders,
+						body: responseBody,
+						contentType: responseHeaders["content-type"],
+					},
+					timing: {
+						startTime,
+						endTime,
+						durationMs: endTime - startTime,
+					},
+				},
+			}).catch(err => {
+				console.error("[Network Interceptor] ❌ Failed to cache XHR:", err);
+			});
+		});
+	}
+
+	open(method: string, url: string | URL, async?: boolean, username?: string | null, password?: string | null): void {
+		this._requestMetadata.method = method.toUpperCase();
+		this._requestMetadata.url = url.toString();
+		return super.open(method, url, async ?? true, username, password);
+	}
 
 	setRequestHeader(name: string, value: string): void {
 		this._requestMetadata.headers[name] = value;

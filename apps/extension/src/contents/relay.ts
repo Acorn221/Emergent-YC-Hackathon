@@ -11,3 +11,15 @@ export const config: PlasmoCSConfig = {
 relayMessage({
 	name: "cache-network",
 });
+
+relayMessage({
+	name: "start-conversation",
+});
+
+relayMessage({
+	name: "get-conversation-updates",
+});
+
+relayMessage({
+	name: "abort-conversation",
+});
