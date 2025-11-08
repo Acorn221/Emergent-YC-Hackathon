@@ -59,3 +59,6 @@ browser.runtime.onInstalled.addListener((object) => {
 //   console.log("Message received in background:", request);
 //   sendResponse({ received: true });
 // });
+chrome.sidePanel
+  .setPanelBehavior({ openPanelOnActionClick: true })
+  .catch((error) => console.error(error));
