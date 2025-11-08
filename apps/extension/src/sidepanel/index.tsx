@@ -29,7 +29,9 @@ export default function SidePanel() {
   ]);
   const [inputValue, setInputValue] = useState("");
   const [isStreaming, setIsStreaming] = useState(false);
-  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string>(
+    () => `conv-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+  );
   const [currentTabId, setCurrentTabId] = useState<number | null>(null);
   const [cacheCount, setCacheCount] = useState<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -170,7 +172,7 @@ export default function SidePanel() {
             clearInterval(pollingRef.current);
           }
           setIsStreaming(false);
-          setConversationId(null);
+          // Don't reset conversationId - keep it for history
         }
       } catch (error) {
         console.error("[SidePanel] Failed to get updates:", error);
@@ -215,25 +217,23 @@ export default function SidePanel() {
       timestamp: Date.now(),
     };
     setMessages((prev) => [...prev, userMsg]);
+    const promptToSend = inputValue; // Save before clearing
     setInputValue("");
     setIsStreaming(true);
 
     try {
-      // Start conversation
-      const convId = `conv-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-      setConversationId(convId);
-
+      // Reuse existing conversationId instead of creating new one
       await sendToBackground<StartConversationRequest, void>({
         name: "start-conversation",
         body: {
-          conversationId: convId,
-          prompt: inputValue,
+          conversationId, // Use persistent ID
+          prompt: promptToSend,
           tabId: currentTabId,
         },
       });
 
       // Start polling for updates
-      startPolling(convId);
+      startPolling(conversationId);
     } catch (error) {
       console.error("[SidePanel] Failed to start conversation:", error);
       setIsStreaming(false);
@@ -264,7 +264,30 @@ export default function SidePanel() {
       clearInterval(pollingRef.current);
     }
     setIsStreaming(false);
-    setConversationId(null);
+  };
+
+  const handleClearConversation = () => {
+    // Stop any ongoing streaming
+    if (isStreaming) {
+      handleStop();
+    }
+
+    // Generate new conversation ID
+    setConversationId(
+      `conv-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    );
+
+    // Reset messages to initial state
+    setMessages([
+      {
+        id: "welcome",
+        type: "system",
+        content: "SYSTEM INITIALIZED. NEURAL LINK ESTABLISHED.",
+        timestamp: Date.now(),
+      },
+    ]);
+
+    console.log("[SidePanel] 🔄 Conversation cleared, new session started");
   };
 
   // Cleanup polling on unmount
@@ -325,9 +348,18 @@ export default function SidePanel() {
               <span>CACHE: {cacheCount} REQ</span>
             </div>
           </div>
-          <div className="text-right text-xs text-green-600">
-            <div>TAB: {currentTabId || "N/A"}</div>
-            <div className="text-green-700">CLAUDE-3.5-SONNET</div>
+          <div className="flex flex-col items-end gap-2">
+            <button
+              onClick={handleClearConversation}
+              disabled={isStreaming}
+              className="rounded border border-cyan-700 bg-cyan-950/40 px-3 py-1 text-[10px] font-bold text-cyan-400 transition-all hover:bg-cyan-900/60 hover:shadow-[0_0_10px_rgba(0,255,255,0.3)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:scale-100 disabled:hover:shadow-none"
+            >
+              [ NEW SESSION ]
+            </button>
+            <div className="text-right text-xs text-green-600">
+              <div>TAB: {currentTabId || "N/A"}</div>
+              <div className="text-green-700">CLAUDE-3.5-SONNET</div>
+            </div>
           </div>
         </div>
       </div>

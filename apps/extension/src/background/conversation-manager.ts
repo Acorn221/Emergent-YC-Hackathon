@@ -62,6 +62,10 @@ interface ConversationState {
 	fullText: string;
 	abortController: AbortController;
 	tabId: number;
+	messages: Array<{
+		role: "user" | "assistant";
+		content: string;
+	}>;
 }
 
 class ConversationManager {
@@ -92,16 +96,35 @@ class ConversationManager {
 	}): Promise<void> {
 		console.log(`[Conversation Manager] 🚀 Starting conversation: ${opts.conversationId}`);
 
-		const abortController = new AbortController();
-		const state: ConversationState = {
-			id: opts.conversationId,
-			status: "streaming",
-			chunks: [],
-			fullText: "",
-			abortController,
-			tabId: opts.tabId,
-		};
-		this.conversations.set(opts.conversationId, state);
+		let state = this.conversations.get(opts.conversationId);
+
+		if (!state) {
+			// New conversation
+			console.log(`[Conversation Manager] 📝 Creating new conversation state`);
+			const abortController = new AbortController();
+			state = {
+				id: opts.conversationId,
+				status: "streaming",
+				chunks: [],
+				fullText: "",
+				abortController,
+				tabId: opts.tabId,
+				messages: [], // Initialize empty history
+			};
+			this.conversations.set(opts.conversationId, state);
+		} else {
+			// Continuing conversation - create new AbortController
+			console.log(`[Conversation Manager] 🔄 Continuing existing conversation (${state.messages.length} messages in history)`);
+			state.abortController = new AbortController();
+			state.status = "streaming";
+			state.chunks = []; // Clear chunks for new response
+		}
+
+		// Add user message to history
+		state.messages.push({
+			role: "user",
+			content: opts.prompt,
+		});
 
 		// Get cache data for context
 		const cacheData = getEntriesForTab(opts.tabId);
@@ -110,12 +133,11 @@ class ConversationManager {
 		console.log(`[Conversation Manager] 📊 Cache has ${cacheData.length} requests`);
 
 		// Start streaming (async, don't await)
-		this.streamResponse(opts.conversationId, opts.prompt, opts.tabId, abortController.signal);
+		this.streamResponse(opts.conversationId, opts.tabId, state.abortController.signal);
 	}
 
 	private async streamResponse(
 		conversationId: string,
-		prompt: string,
 		tabId: number,
 		signal: AbortSignal
 	): Promise<void> {
@@ -123,22 +145,52 @@ class ConversationManager {
 		if (!state) return;
 
 		try {
-			console.log(`[Conversation Manager] 📡 Starting AI SDK stream...`);
+			console.log(`[Conversation Manager] 📡 Starting AI SDK stream with ${state.messages.length} messages in history...`);
 
 			const result = streamText({
-				// model: this.anthropic("claude-sonnet-4-5-20250929"),
-				model: this.anthropic("claude-haiku-4-5-20251001"),
-				prompt,
-				maxTokens: 4096,
+				model: this.anthropic("claude-sonnet-4-5-20250929"),
+				// model: this.anthropic("claude-haiku-4-5-20251001"),
+				system: `You are a security researcher analyzing web applications for vulnerabilities. Your goal is to identify ACTUAL security issues that could compromise user data, privacy, or system integrity.
+
+IMPORTANT - What constitutes a vulnerability:
+- Information about OTHER USERS that the current user should not have access to (leaked emails, names, PII of others)
+- Sensitive credentials, API keys, tokens, or secrets exposed in the frontend
+- Authentication/authorization bypasses (accessing data without proper permissions)
+- CSRF tokens missing or improperly implemented
+- Security misconfigurations (CORS, CSP, etc.)
+- SQL injection, XSS, or other code injection vectors
+- Insecure data transmission (sensitive data over HTTP, etc.)
+- Exposed admin panels or debug endpoints
+- Hardcoded secrets or credentials
+
+NOT vulnerabilities:
+- The current user's own information (their name, email, profile data they are authorized to see)
+- Expected functionality (user can see their own orders, settings, etc.)
+- Public information that is meant to be visible
+- Features working as intended
+
+Use your tools to:
+1. Inspect network requests for sensitive data exposure
+2. Execute JavaScript to check DOM, localStorage, cookies for security issues
+3. Search for common vulnerability patterns in API responses
+4. Verify proper authentication and authorization implementations
+
+Be thorough but accurate. Only report genuine security concerns.`,
+				messages: state.messages, // Use message history instead of single prompt
+				maxTokens: 4096 * 4,
 				maxSteps: 5, // Allow up to 5 tool call rounds
 				tools: this.buildTools(tabId),
 				abortSignal: signal,
 			});
 
+			// Track assistant response
+			let assistantMessage = "";
+
 			// Stream the full text (includes tool execution results)
 			// The AI SDK will automatically execute tools and continue the conversation
 			for await (const chunk of result.fullStream) {
 				if (chunk.type === "text-delta") {
+					assistantMessage += chunk.textDelta; // Accumulate for history
 					const chunkData: StreamChunk = {
 						type: "text-delta",
 						data: chunk.textDelta,
@@ -176,6 +228,17 @@ class ConversationManager {
 				}
 			}
 
+			// Add assistant response to message history (only if not empty)
+			if (assistantMessage.trim().length > 0) {
+				state.messages.push({
+					role: "assistant",
+					content: assistantMessage,
+				});
+				console.log(`[Conversation Manager] 💾 Added assistant response to history (${assistantMessage.length} chars)`);
+			} else {
+				console.warn(`[Conversation Manager] ⚠️ Skipping empty assistant message`);
+			}
+
 			state.status = "completed";
 			state.chunks.push({
 				type: "finish",
@@ -190,6 +253,13 @@ class ConversationManager {
 				console.log(`[Conversation Manager] ⏸️ Conversation aborted: ${conversationId}`);
 			} else {
 				state.status = "error";
+
+				// Remove the last user message since it wasn't processed
+				if (state.messages.length > 0 && state.messages[state.messages.length - 1]?.role === "user") {
+					const removedMsg = state.messages.pop();
+					console.warn(`[Conversation Manager] 🔙 Removed unprocessed user message due to error: "${removedMsg?.content.substring(0, 50) || ''}..."`);
+				}
+
 				state.chunks.push({
 					type: "error",
 					data: error.message || String(error),
@@ -203,14 +273,14 @@ class ConversationManager {
 	private buildTools(tabId: number) {
 		return {
 			get_network_requests: tool({
-				description: "List network requests with summary info only. Returns ID, URL, method, status, type, content size, duration. Use get_request_details to fetch full headers/bodies/cookies for specific requests. This is much more efficient than fetching all data at once.",
+				description: "List network requests with summary info only. Returns ID, URL, method, status, type, content size, duration. Use get_request_details to fetch full headers/bodies/cookies for specific requests. This is much more efficient than fetching all data at once. KEEP LIMIT SMALL to avoid rate limits.",
 				parameters: z.object({
-					limit: z.number().optional().describe("Maximum number of requests to return (default: 20, max: 50)"),
+					limit: z.number().optional().describe("Maximum number of requests to return (default: 10, max: 20)"),
 					offset: z.number().optional().describe("Starting offset for pagination (default: 0)"),
 				}),
 				execute: async ({ limit, offset }) => {
 					const requests = getEntriesForTab(tabId);
-					const limitNum = Math.min(limit || 20, 50);
+					const limitNum = Math.min(limit || 10, 20); // Reduced from 20/50 to 10/20
 					const offsetNum = offset || 0;
 					const limited = requests.slice(offsetNum, offsetNum + limitNum);
 
@@ -241,10 +311,10 @@ class ConversationManager {
 			}),
 
 			get_request_details: tool({
-				description: "Get complete details for a specific request by ID. Returns full headers, cookies, auth headers, and bodies (truncated to 1KB by default). Use get_request_body_chunk to fetch more body content if needed.",
+				description: "Get complete details for a specific request by ID. Returns full headers, cookies, auth headers, and bodies (truncated to 500 chars by default to save tokens). Use get_request_body_chunk to fetch more body content if needed.",
 				parameters: z.object({
 					requestId: z.string().describe("Request ID from get_network_requests or search_requests"),
-					bodyPreviewSize: z.number().optional().describe("Size of body preview in characters (default: 1000, max: 2000)"),
+					bodyPreviewSize: z.number().optional().describe("Size of body preview in characters (default: 500, max: 1500)"),
 				}),
 				execute: async ({ requestId, bodyPreviewSize }) => {
 					const request = getCacheEntry(requestId, tabId);
@@ -253,8 +323,8 @@ class ConversationManager {
 						return { error: `Request not found: ${requestId}` };
 					}
 
-					// Truncate bodies with configurable size
-					const maxBodySize = Math.min(bodyPreviewSize || 1000, 2000);
+					// Truncate bodies with configurable size - reduced to save tokens
+					const maxBodySize = Math.min(bodyPreviewSize || 500, 1500); // Reduced from 1000/2000
 					const requestBodySize = request.request.body?.length || 0;
 					const responseBodySize = request.response.body?.length || 0;
 
@@ -345,7 +415,7 @@ class ConversationManager {
 			}),
 
 			search_requests: tool({
-				description: "Search and filter network requests by URL pattern, HTTP method, and/or status code range. Returns summary info. Use get_request_details for full data on specific results.",
+				description: "Search and filter network requests by URL pattern, HTTP method, and/or status code range. Returns summary info (max 10 results to save tokens). Use get_request_details for full data on specific results.",
 				parameters: z.object({
 					url: z.string().optional().describe("URL substring to search for (case-insensitive, e.g., 'api', '/users', 'example.com')"),
 					method: z.string().optional().describe("HTTP method to filter by (GET, POST, PUT, DELETE, etc.)"),
@@ -373,7 +443,7 @@ class ConversationManager {
 					return {
 						found: results.length,
 						filters: { url, method: method?.toUpperCase(), minStatus, maxStatus },
-						requests: results.slice(0, 20).map(r => ({
+						requests: results.slice(0, 10).map(r => ({ // Reduced from 20 to 10
 							id: r.id,
 							url: r.request.url,
 							method: r.request.method,
@@ -391,13 +461,13 @@ class ConversationManager {
 			}),
 
 			search_request_content: tool({
-				description: "Search for text in request/response URLs, bodies, and headers. Finds requests containing specific data, field names, or values. Case-insensitive substring match. Perfect for 'which request has user email' or 'find requests with field X'.",
+				description: "Search for text in request/response URLs, bodies, and headers. Finds requests containing specific data, field names, or values. Case-insensitive substring match. Max 10 results to save tokens.",
 				parameters: z.object({
 					query: z.string().describe("Search query - looks for this text in URLs, request bodies, and response bodies"),
 					searchIn: z.enum(["all", "url", "request_body", "response_body"]).optional().describe("Where to search: 'all' (default), 'url', 'request_body', or 'response_body'"),
-					limit: z.number().optional().describe("Max results to return (default: 20)"),
+					limit: z.number().optional().describe("Max results to return (default: 10, max: 15)"),
 				}),
-				execute: async ({ query, searchIn = "all", limit = 20 }) => {
+				execute: async ({ query, searchIn = "all", limit = 10 }) => {
 					const allRequests = getEntriesForTab(tabId);
 					const queryLower = query.toLowerCase();
 					const matches: Array<{
@@ -428,11 +498,13 @@ class ConversationManager {
 						}
 					}
 
+					const maxLimit = Math.min(limit, 15); // Cap at 15 instead of 20
+
 					return {
 						query,
 						searchIn,
 						found: matches.length,
-						results: matches.slice(0, limit).map(m => ({
+						results: matches.slice(0, maxLimit).map(m => ({
 							id: m.request.id,
 							url: m.request.request.url,
 							method: m.request.request.method,
@@ -550,8 +622,11 @@ class ConversationManager {
 				}),
 				execute: async ({ code }) => {
 					try {
-						console.log(`[Tool: execute_javascript] Executing code for tab ${tabId}:`, code);
+						console.log(`[Tool: execute_javascript] 🔧 Executing code for tab ${tabId}:\n${code}`);
 						const result = await scriptExecutionManager.queueScriptExecution(tabId, code);
+
+						// Log the result to console for debugging
+						console.log(`[Tool: execute_javascript] ✅ Result:\n${result}`);
 
 						return {
 							success: true,
@@ -559,6 +634,7 @@ class ConversationManager {
 							message: "Code executed successfully. Result includes any console logs captured during execution.",
 						};
 					} catch (error) {
+						console.error(`[Tool: execute_javascript] ❌ Error:`, error);
 						return {
 							success: false,
 							error: error instanceof Error ? error.message : String(error),

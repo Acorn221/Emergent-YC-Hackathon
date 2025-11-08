@@ -48,9 +48,14 @@ const handler: PlasmoMessaging.MessageHandler<
 		// Execution failed
 		formattedResult = `ERROR:\n${error}`;
 
-		if (logs && logs.length > 0) {
+		// Filter out internal Script Executor logs
+		const pageLogs = logs?.filter(log =>
+			!log.message.includes('[Script Executor]')
+		) || [];
+
+		if (pageLogs.length > 0) {
 			formattedResult += "\n\nConsole logs:\n";
-			formattedResult += logs
+			formattedResult += pageLogs
 				.map((log) => `[${log.level.toUpperCase()}] ${log.message}`)
 				.join("\n");
 		}
@@ -64,9 +69,14 @@ const handler: PlasmoMessaging.MessageHandler<
 		// Execution succeeded
 		formattedResult = result;
 
-		if (logs && logs.length > 0) {
+		// Filter out internal Script Executor logs
+		const pageLogs = logs?.filter(log =>
+			!log.message.includes('[Script Executor]')
+		) || [];
+
+		if (pageLogs.length > 0) {
 			formattedResult += "\n\nConsole logs:\n";
-			formattedResult += logs
+			formattedResult += pageLogs
 				.map((log) => `[${log.level.toUpperCase()}] ${log.message}`)
 				.join("\n");
 		}
