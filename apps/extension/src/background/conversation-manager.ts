@@ -10,7 +10,7 @@ import { streamText, tool } from "ai";
 import { z } from "zod";
 import { getEntriesForTab, searchByUrl, filterEntries, getCacheStatistics } from "./cache-state";
 
-type StreamChunk =
+export type StreamChunk =
 	| {
 		type: "text-delta";
 		data: string;
@@ -70,9 +70,12 @@ class ConversationManager {
 
 		this.anthropic = createAnthropic({
 			apiKey: apiKey || "",
+			headers: {
+				"anthropic-dangerous-direct-browser-access": "true",
+			},
 		});
 
-		console.log("[Conversation Manager] ✅ Initialized with AI SDK");
+		console.log("[Conversation Manager] ✅ Initialized with AI SDK + CORS headers");
 	}
 
 	async startConversation(opts: {
@@ -125,12 +128,14 @@ class ConversationManager {
 
 			// Stream text deltas
 			for await (const chunk of result.textStream) {
-				state.chunks.push({
+				const chunkData: StreamChunk = {
 					type: "text-delta",
 					data: chunk,
 					timestamp: Date.now(),
-				});
+				};
+				state.chunks.push(chunkData);
 				state.fullText += chunk;
+				console.log(`[Conversation Manager] 📝 Added text chunk (${chunk.length} chars), total chunks: ${state.chunks.length}`);
 			}
 
 			state.status = "completed";
