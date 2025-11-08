@@ -1,0 +1,3 @@
+[submodule "apps/roo-code"]
+	path = apps/roo-code
+	url = git@github.com:Acorn221/Roo-Code.git
