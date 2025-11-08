@@ -3,6 +3,8 @@
  * 
  * Original implementation - receives network request data from content scripts
  * and stores them in the background cache
+ * 
+ * Enhanced with webRequest API integration for complete HTTP headers
  */
 
 import type { PlasmoMessaging } from "@plasmohq/messaging";
@@ -12,6 +14,7 @@ import {
 	getCacheStatistics,
 	type NetworkCacheEntry,
 } from "../cache-state";
+import { findMatchingWebRequest } from "../webrequest-buffer";
 
 export interface NetworkCacheMessage {
 	type: "fetch" | "xhr";
@@ -38,6 +41,30 @@ export interface NetworkCacheMessage {
 	errorMessage?: string;
 }
 
+/**
+ * Extract cookies from cookie header
+ */
+function extractCookies(headers: Record<string, string>): string[] {
+	const cookieHeader = headers["cookie"] || headers["set-cookie"];
+	if (!cookieHeader) return [];
+	
+	// Split by semicolon and clean up
+	return cookieHeader.split(";").map(c => c.trim()).filter(c => c.length > 0);
+}
+
+/**
+ * Extract auth headers
+ */
+function extractAuthHeaders(headers: Record<string, string>): {
+	authorization?: string;
+	"www-authenticate"?: string;
+} {
+	return {
+		authorization: headers["authorization"],
+		"www-authenticate": headers["www-authenticate"],
+	};
+}
+
 const handler: PlasmoMessaging.MessageHandler<NetworkCacheMessage, void> = (
 	req,
 	res
@@ -60,8 +87,28 @@ const handler: PlasmoMessaging.MessageHandler<NetworkCacheMessage, void> = (
 
 	const { type, request, response, timing, hasError, errorMessage } = req.body;
 
+	// Try to find matching webRequest data for header enrichment
+	const webRequestData = findMatchingWebRequest(
+		request.url,
+		tabId,
+		request.timestamp
+	);
+
 	// Generate unique ID
 	const entryId = generateEntryId(tabId, type);
+
+	// Merge headers: JavaScript headers as base, webRequest as authoritative source
+	const requestHeaders = webRequestData
+		? { ...request.headers, ...webRequestData.requestHeaders }
+		: request.headers;
+
+	const responseHeaders = webRequestData?.responseHeaders
+		? { ...response.headers, ...webRequestData.responseHeaders }
+		: response.headers;
+
+	// Extract security-relevant headers if webRequest data is available
+	const cookies = webRequestData ? extractCookies(webRequestData.requestHeaders) : undefined;
+	const authHeaders = webRequestData ? extractAuthHeaders(webRequestData.requestHeaders) : undefined;
 
 	// Create cache entry
 	const entry: NetworkCacheEntry = {
@@ -71,14 +118,14 @@ const handler: PlasmoMessaging.MessageHandler<NetworkCacheMessage, void> = (
 		request: {
 			url: request.url,
 			method: request.method,
-			headers: request.headers,
+			headers: requestHeaders,
 			body: request.body,
 			timestamp: request.timestamp,
 		},
 		response: {
-			status: response.status,
-			statusText: response.statusText,
-			headers: response.headers,
+			status: webRequestData?.status || response.status,
+			statusText: webRequestData?.statusText || response.statusText,
+			headers: responseHeaders,
 			body: response.body,
 			contentType: response.contentType,
 		},
@@ -91,6 +138,9 @@ const handler: PlasmoMessaging.MessageHandler<NetworkCacheMessage, void> = (
 			requestType: type,
 			hasError: hasError || false,
 			errorMessage,
+			hasWebRequestData: !!webRequestData,
+			cookies,
+			authHeaders,
 		},
 	};
 
@@ -100,9 +150,11 @@ const handler: PlasmoMessaging.MessageHandler<NetworkCacheMessage, void> = (
 	// Log to console (for debugging)
 	const statusIcon = response.status >= 200 && response.status < 300 ? "✅" :
 		response.status >= 400 ? "❌" : "⚠️";
+	
+	const enrichmentIcon = webRequestData ? "🔐" : "";
 
 	console.log(
-		`[Cache Network] ${statusIcon} ${type.toUpperCase()} ${request.method} ${response.status} - ${request.url} (${timing.durationMs.toFixed(0)}ms)`
+		`[Cache Network] ${statusIcon}${enrichmentIcon} ${type.toUpperCase()} ${request.method} ${response.status} - ${request.url} (${timing.durationMs.toFixed(0)}ms)`
 	);
 
 	// Log stats every 25 requests

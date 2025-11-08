@@ -23,3 +23,11 @@ relayMessage({
 relayMessage({
 	name: "abort-conversation",
 });
+
+relayMessage({
+	name: "get-pending-script",
+});
+
+relayMessage({
+	name: "script-execution-result",
+});

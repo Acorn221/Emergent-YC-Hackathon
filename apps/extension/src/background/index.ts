@@ -4,6 +4,9 @@ import type { AppRouter } from "@acme/api";
 import superjson from "superjson";
 import { createTRPCClient, httpBatchLink } from '@trpc/client';
 
+// Initialize webRequest listeners for header capture
+import "./webrequest-listener";
+
 const API_URL = process.env.PLASMO_PUBLIC_API_URL || "http://localhost:3000/api/trpc";
 
 const storage = new Storage({

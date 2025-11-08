@@ -39,6 +39,14 @@ export interface NetworkCacheEntry {
     requestType: "fetch" | "xhr";
     hasError: boolean;
     errorMessage?: string;
+    
+    // WebRequest API enrichment
+    hasWebRequestData?: boolean;
+    cookies?: string[]; // Parsed cookie values
+    authHeaders?: {
+      authorization?: string;
+      "www-authenticate"?: string;
+    };
   };
 }
 
@@ -94,6 +102,25 @@ export function addCacheEntry(entry: NetworkCacheEntry): void {
 export function getEntriesForTab(tabId: number): NetworkCacheEntry[] {
   const cache = getTabCache(tabId);
   return Array.from(cache.values());
+}
+
+/**
+ * Get a single entry by ID
+ */
+export function getCacheEntry(entryId: string, tabId?: number): NetworkCacheEntry | null {
+  if (tabId !== undefined) {
+    // Search in specific tab
+    const cache = tabCaches.get(tabId);
+    return cache?.get(entryId) || null;
+  }
+  
+  // Search across all tabs
+  for (const cache of tabCaches.values()) {
+    const entry = cache.get(entryId);
+    if (entry) return entry;
+  }
+  
+  return null;
 }
 
 /**

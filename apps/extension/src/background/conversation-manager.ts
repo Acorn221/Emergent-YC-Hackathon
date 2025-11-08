@@ -8,7 +8,14 @@
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { streamText, tool } from "ai";
 import { z } from "zod";
-import { getEntriesForTab, searchByUrl, filterEntries, getCacheStatistics } from "./cache-state";
+import {
+	getEntriesForTab,
+	getCacheEntry,
+	searchByUrl,
+	filterEntries,
+	getCacheStatistics
+} from "./cache-state";
+import { scriptExecutionManager } from "./script-execution-manager";
 
 export type StreamChunk =
 	| {
@@ -119,23 +126,54 @@ class ConversationManager {
 			console.log(`[Conversation Manager] 📡 Starting AI SDK stream...`);
 
 			const result = streamText({
-				model: this.anthropic("claude-sonnet-4-5-20250929"),
+				// model: this.anthropic("claude-sonnet-4-5-20250929"),
+				model: this.anthropic("claude-haiku-4-5-20251001"),
 				prompt,
 				maxTokens: 4096,
+				maxSteps: 5, // Allow up to 5 tool call rounds
 				tools: this.buildTools(tabId),
 				abortSignal: signal,
 			});
 
-			// Stream text deltas
-			for await (const chunk of result.textStream) {
-				const chunkData: StreamChunk = {
-					type: "text-delta",
-					data: chunk,
-					timestamp: Date.now(),
-				};
-				state.chunks.push(chunkData);
-				state.fullText += chunk;
-				console.log(`[Conversation Manager] 📝 Added text chunk (${chunk.length} chars), total chunks: ${state.chunks.length}`);
+			// Stream the full text (includes tool execution results)
+			// The AI SDK will automatically execute tools and continue the conversation
+			for await (const chunk of result.fullStream) {
+				if (chunk.type === "text-delta") {
+					const chunkData: StreamChunk = {
+						type: "text-delta",
+						data: chunk.textDelta,
+						timestamp: Date.now(),
+					};
+					state.chunks.push(chunkData);
+					state.fullText += chunk.textDelta;
+					console.log(`[Conversation Manager] 📝 Text delta (${chunk.textDelta.length} chars)`);
+				} else if (chunk.type === "tool-call") {
+					console.log(`[Conversation Manager] 🔧 Tool call: ${chunk.toolName} with args:`, chunk.args);
+					const chunkData: StreamChunk = {
+						type: "tool-call",
+						data: {
+							toolCallId: chunk.toolCallId,
+							toolName: chunk.toolName,
+							args: chunk.args as Record<string, unknown>,
+						},
+						timestamp: Date.now(),
+					};
+					state.chunks.push(chunkData);
+				} else if (chunk.type === "tool-result") {
+					console.log(`[Conversation Manager] ✅ Tool result: ${chunk.toolName}`, chunk.result);
+					const chunkData: StreamChunk = {
+						type: "tool-result",
+						data: {
+							toolCallId: chunk.toolCallId,
+							toolName: chunk.toolName,
+							result: chunk.result,
+						},
+						timestamp: Date.now(),
+					};
+					state.chunks.push(chunkData);
+				} else if (chunk.type === "step-finish") {
+					console.log(`[Conversation Manager] 🔄 Step finished, continuing...`);
+				}
 			}
 
 			state.status = "completed";
@@ -165,18 +203,22 @@ class ConversationManager {
 	private buildTools(tabId: number) {
 		return {
 			get_network_requests: tool({
-				description: "Get all network requests captured for this tab. Returns request/response data including URLs, methods, headers, bodies, status codes, and timing information.",
+				description: "List network requests with summary info only. Returns ID, URL, method, status, type, content size, duration. Use get_request_details to fetch full headers/bodies/cookies for specific requests. This is much more efficient than fetching all data at once.",
 				parameters: z.object({
-					limit: z.number().optional().describe("Maximum number of requests to return (default: 50, max: 1000)"),
+					limit: z.number().optional().describe("Maximum number of requests to return (default: 20, max: 50)"),
+					offset: z.number().optional().describe("Starting offset for pagination (default: 0)"),
 				}),
-				execute: async ({ limit }) => {
+				execute: async ({ limit, offset }) => {
 					const requests = getEntriesForTab(tabId);
-					const limitNum = Math.min(limit || 50, 1000);
-					const limited = requests.slice(0, limitNum);
+					const limitNum = Math.min(limit || 20, 50);
+					const offsetNum = offset || 0;
+					const limited = requests.slice(offsetNum, offsetNum + limitNum);
 
 					return {
 						total: requests.length,
 						returned: limited.length,
+						offset: offsetNum,
+						hasMore: offsetNum + limitNum < requests.length,
 						requests: limited.map(r => ({
 							id: r.id,
 							url: r.request.url,
@@ -184,103 +226,345 @@ class ConversationManager {
 							status: r.response.status,
 							statusText: r.response.statusText,
 							contentType: r.response.contentType,
+							requestSize: r.request.body?.length || 0,
+							responseSize: r.response.body?.length || 0,
 							durationMs: r.timing.durationMs,
 							timestamp: r.request.timestamp,
 							hasError: r.metadata.hasError,
-							requestHeaders: r.request.headers,
-							responseHeaders: r.response.headers,
-							requestBody: r.request.body?.substring(0, 1000),
-							responseBody: r.response.body?.substring(0, 1000),
+							// Quick indicators
+							hasWebRequestData: r.metadata.hasWebRequestData,
+							hasCookies: (r.metadata.cookies?.length || 0) > 0,
+							hasAuth: !!(r.metadata.authHeaders?.authorization),
 						})),
 					};
 				},
 			}),
 
-			search_requests_by_url: tool({
-				description: "Search network requests by URL pattern. Case-insensitive substring match.",
+			get_request_details: tool({
+				description: "Get complete details for a specific request by ID. Returns full headers, cookies, auth headers, and bodies (truncated to 1KB by default). Use get_request_body_chunk to fetch more body content if needed.",
 				parameters: z.object({
-					pattern: z.string().describe("URL pattern to search for (e.g., 'api', 'example.com', '/users')"),
+					requestId: z.string().describe("Request ID from get_network_requests or search_requests"),
+					bodyPreviewSize: z.number().optional().describe("Size of body preview in characters (default: 1000, max: 2000)"),
 				}),
-				execute: async ({ pattern }) => {
-					const results = searchByUrl(pattern, tabId);
+				execute: async ({ requestId, bodyPreviewSize }) => {
+					const request = getCacheEntry(requestId, tabId);
+
+					if (!request) {
+						return { error: `Request not found: ${requestId}` };
+					}
+
+					// Truncate bodies with configurable size
+					const maxBodySize = Math.min(bodyPreviewSize || 1000, 2000);
+					const requestBodySize = request.request.body?.length || 0;
+					const responseBodySize = request.response.body?.length || 0;
+
+					const requestBody = request.request.body
+						? requestBodySize > maxBodySize
+							? `${request.request.body.substring(0, maxBodySize)}\n... [truncated, ${requestBodySize} total chars, use get_request_body_chunk to fetch more]`
+							: request.request.body
+						: undefined;
+
+					const responseBody = request.response.body
+						? responseBodySize > maxBodySize
+							? `${request.response.body.substring(0, maxBodySize)}\n... [truncated, ${responseBodySize} total chars, use get_request_body_chunk to fetch more]`
+							: request.response.body
+						: undefined;
+
 					return {
-						pattern,
-						found: results.length,
-						requests: results.map(r => ({
-							id: r.id,
-							url: r.request.url,
-							method: r.request.method,
-							status: r.response.status,
-							durationMs: r.timing.durationMs,
-						})),
+						id: request.id,
+						request: {
+							url: request.request.url,
+							method: request.request.method,
+							headers: request.request.headers,
+							body: requestBody,
+							bodySize: requestBodySize,
+							timestamp: new Date(request.request.timestamp).toISOString(),
+						},
+						response: {
+							status: request.response.status,
+							statusText: request.response.statusText,
+							headers: request.response.headers,
+							body: responseBody,
+							bodySize: responseBodySize,
+							contentType: request.response.contentType,
+						},
+						timing: {
+							durationMs: request.timing.durationMs,
+							startTime: request.timing.startTime,
+							endTime: request.timing.endTime,
+						},
+						metadata: {
+							requestType: request.metadata.requestType,
+							hasError: request.metadata.hasError,
+							errorMessage: request.metadata.errorMessage,
+							hasWebRequestData: request.metadata.hasWebRequestData,
+							cookies: request.metadata.cookies,
+							authHeaders: request.metadata.authHeaders,
+						},
 					};
 				},
 			}),
 
-			filter_requests_by_status: tool({
-				description: "Filter network requests by HTTP status code range. Useful for finding errors (4xx, 5xx) or successful requests (2xx).",
+			get_request_body_chunk: tool({
+				description: "Fetch a specific chunk of a request or response body. Use this when the body was truncated in get_request_details and you need to see more content.",
 				parameters: z.object({
-					minStatus: z.number().optional().describe("Minimum status code (inclusive)"),
-					maxStatus: z.number().optional().describe("Maximum status code (inclusive)"),
+					requestId: z.string().describe("Request ID"),
+					bodyType: z.enum(["request", "response"]).describe("Which body to fetch: 'request' or 'response'"),
+					offset: z.number().optional().describe("Starting position in the body (default: 0)"),
+					length: z.number().optional().describe("Number of characters to fetch (default: 2000, max: 5000)"),
 				}),
-				execute: async ({ minStatus, maxStatus }) => {
-					const results = filterEntries({
-						tabId,
-						minStatus,
-						maxStatus,
-					});
+				execute: async ({ requestId, bodyType, offset = 0, length = 2000 }) => {
+					const request = getCacheEntry(requestId, tabId);
+
+					if (!request) {
+						return { error: `Request not found: ${requestId}` };
+					}
+
+					const body = bodyType === "request" ? request.request.body : request.response.body;
+
+					if (!body) {
+						return { error: `No ${bodyType} body available for this request` };
+					}
+
+					const maxLength = Math.min(length, 5000);
+					const chunk = body.substring(offset, offset + maxLength);
+					const totalSize = body.length;
+					const hasMore = offset + maxLength < totalSize;
+
 					return {
-						minStatus,
-						maxStatus,
+						requestId,
+						bodyType,
+						offset,
+						chunkSize: chunk.length,
+						totalSize,
+						hasMore,
+						nextOffset: hasMore ? offset + maxLength : null,
+						chunk,
+					};
+				},
+			}),
+
+			search_requests: tool({
+				description: "Search and filter network requests by URL pattern, HTTP method, and/or status code range. Returns summary info. Use get_request_details for full data on specific results.",
+				parameters: z.object({
+					url: z.string().optional().describe("URL substring to search for (case-insensitive, e.g., 'api', '/users', 'example.com')"),
+					method: z.string().optional().describe("HTTP method to filter by (GET, POST, PUT, DELETE, etc.)"),
+					minStatus: z.number().optional().describe("Minimum status code (inclusive, e.g., 200)"),
+					maxStatus: z.number().optional().describe("Maximum status code (inclusive, e.g., 299 for all 2xx)"),
+				}),
+				execute: async ({ url, method, minStatus, maxStatus }) => {
+					let results = getEntriesForTab(tabId);
+
+					// Apply URL filter
+					if (url) {
+						results = searchByUrl(url, tabId);
+					}
+
+					// Apply other filters
+					if (method || minStatus !== undefined || maxStatus !== undefined) {
+						results = filterEntries({
+							tabId,
+							method: method?.toUpperCase(),
+							minStatus,
+							maxStatus,
+						}).filter(r => !url || results.some(ur => ur.id === r.id));
+					}
+
+					return {
 						found: results.length,
-						requests: results.map(r => ({
+						filters: { url, method: method?.toUpperCase(), minStatus, maxStatus },
+						requests: results.slice(0, 20).map(r => ({
 							id: r.id,
 							url: r.request.url,
 							method: r.request.method,
 							status: r.response.status,
 							statusText: r.response.statusText,
+							contentType: r.response.contentType,
+							responseSize: r.response.body?.length || 0,
 							durationMs: r.timing.durationMs,
-							errorMessage: r.metadata.errorMessage,
+							hasWebRequestData: r.metadata.hasWebRequestData,
+							hasCookies: (r.metadata.cookies?.length || 0) > 0,
+							hasAuth: !!(r.metadata.authHeaders?.authorization),
 						})),
 					};
 				},
 			}),
 
-			filter_requests_by_method: tool({
-				description: "Filter network requests by HTTP method (GET, POST, PUT, DELETE, etc.)",
+			search_request_content: tool({
+				description: "Search for text in request/response URLs, bodies, and headers. Finds requests containing specific data, field names, or values. Case-insensitive substring match. Perfect for 'which request has user email' or 'find requests with field X'.",
 				parameters: z.object({
-					method: z.string().describe("HTTP method to filter by"),
+					query: z.string().describe("Search query - looks for this text in URLs, request bodies, and response bodies"),
+					searchIn: z.enum(["all", "url", "request_body", "response_body"]).optional().describe("Where to search: 'all' (default), 'url', 'request_body', or 'response_body'"),
+					limit: z.number().optional().describe("Max results to return (default: 20)"),
 				}),
-				execute: async ({ method }) => {
-					const results = filterEntries({
-						tabId,
-						method: method.toUpperCase(),
-					});
+				execute: async ({ query, searchIn = "all", limit = 20 }) => {
+					const allRequests = getEntriesForTab(tabId);
+					const queryLower = query.toLowerCase();
+					const matches: Array<{
+						request: typeof allRequests[0];
+						matchLocations: string[];
+					}> = [];
+
+					for (const req of allRequests) {
+						const locations: string[] = [];
+
+						// Search in URL
+						if ((searchIn === "all" || searchIn === "url") && req.request.url.toLowerCase().includes(queryLower)) {
+							locations.push("url");
+						}
+
+						// Search in request body
+						if ((searchIn === "all" || searchIn === "request_body") && req.request.body?.toLowerCase().includes(queryLower)) {
+							locations.push("request_body");
+						}
+
+						// Search in response body
+						if ((searchIn === "all" || searchIn === "response_body") && req.response.body?.toLowerCase().includes(queryLower)) {
+							locations.push("response_body");
+						}
+
+						if (locations.length > 0) {
+							matches.push({ request: req, matchLocations: locations });
+						}
+					}
+
 					return {
-						method: method.toUpperCase(),
-						found: results.length,
-						requests: results.map(r => ({
-							id: r.id,
-							url: r.request.url,
-							status: r.response.status,
-							durationMs: r.timing.durationMs,
+						query,
+						searchIn,
+						found: matches.length,
+						results: matches.slice(0, limit).map(m => ({
+							id: m.request.id,
+							url: m.request.request.url,
+							method: m.request.request.method,
+							status: m.request.response.status,
+							matchedIn: m.matchLocations,
+							contentType: m.request.response.contentType,
+							responseSize: m.request.response.body?.length || 0,
 						})),
 					};
+				},
+			}),
+
+			expose_request_data: tool({
+				description: "Inject cached request response data into the page as window.secshield.data. Makes response bodies available for JavaScript analysis in the page context without re-fetching. Data is injected as an array where each element contains {url, method, status, body, headers}.",
+				parameters: z.object({
+					requestIds: z.array(z.string()).describe("Array of request IDs to expose (from get_network_requests or search results)"),
+					variableName: z.string().optional().describe("Custom variable name under window.secshield (default: 'data'). Will be accessible as window.secshield.{name}"),
+				}),
+				execute: async ({ requestIds, variableName = "data" }) => {
+					const exposedData: Array<{
+						url: string;
+						method: string;
+						status: number;
+						body: unknown;
+						headers: Record<string, string>;
+					}> = [];
+
+					for (const requestId of requestIds) {
+						const request = getCacheEntry(requestId, tabId);
+						if (request) {
+							// Try to parse JSON responses
+							let parsedBody: unknown = request.response.body;
+							if (request.response.contentType?.includes("json") && request.response.body) {
+								try {
+									parsedBody = JSON.parse(request.response.body);
+								} catch {
+									// Keep as string if parse fails
+								}
+							}
+
+							exposedData.push({
+								url: request.request.url,
+								method: request.request.method,
+								status: request.response.status,
+								body: parsedBody,
+								headers: request.response.headers,
+							});
+						}
+					}
+
+					// Inject into page
+					try {
+						await chrome.scripting.executeScript({
+							target: { tabId },
+							world: "MAIN", // Inject into page's main world
+							func: (varName: string, data: typeof exposedData) => {
+								// Create secshield namespace if it doesn't exist
+								if (typeof (window as any).secshield === "undefined") {
+									(window as any).secshield = {};
+								}
+								// Inject data
+								(window as any).secshield[varName] = data;
+								console.log(`[SecShield] Exposed ${data.length} requests as window.secshield.${varName}`);
+							},
+							args: [variableName, exposedData],
+						});
+
+						return {
+							success: true,
+							exposedCount: exposedData.length,
+							accessPath: `window.secshield.${variableName}`,
+							message: `Injected ${exposedData.length} request responses. Access via window.secshield.${variableName}[index].body in the browser console.`,
+						};
+					} catch (error) {
+						return {
+							success: false,
+							error: error instanceof Error ? error.message : "Failed to inject data into page",
+						};
+					}
 				},
 			}),
 
 			get_cache_statistics: tool({
-				description: "Get summary statistics about cached network requests including total count, breakdown by method, status codes, and request types.",
+				description: "Get summary statistics about cached network requests including total count, breakdown by method, status codes, request types, and how many have complete HTTP header data (cookies, auth).",
 				parameters: z.object({}),
 				execute: async () => {
 					const stats = getCacheStatistics(tabId);
+					const allRequests = getEntriesForTab(tabId);
+
+					// Count enriched requests
+					const enrichedCount = allRequests.filter(r => r.metadata.hasWebRequestData).length;
+					const withCookies = allRequests.filter(r => (r.metadata.cookies?.length || 0) > 0).length;
+					const withAuth = allRequests.filter(r => r.metadata.authHeaders?.authorization).length;
+
 					return {
 						totalRequests: stats.totalEntries,
 						byMethod: stats.byMethod,
 						byStatus: stats.byStatus,
 						byType: stats.byType,
 						errorCount: stats.errorCount,
+						enrichedWithWebRequest: enrichedCount,
+						requestsWithCookies: withCookies,
+						requestsWithAuth: withAuth,
+						enrichmentRate: stats.totalEntries > 0
+							? `${Math.round((enrichedCount / stats.totalEntries) * 100)}%`
+							: "0%",
 					};
+				},
+			}),
+
+			execute_javascript: tool({
+				description: "Execute JavaScript code in the page context (MAIN world) for security analysis. Can access DOM, cookies, localStorage, sessionStorage, global variables, and page functions. Returns the result and any console logs captured during execution. Useful for checking security configurations, extracting tokens, analyzing page state, and testing for vulnerabilities.",
+				parameters: z.object({
+					code: z.string().describe("JavaScript code to execute. Will be wrapped in async IIFE, so you can use await. Example: 'document.cookie' or 'localStorage.getItem(\"token\")'"),
+				}),
+				execute: async ({ code }) => {
+					try {
+						console.log(`[Tool: execute_javascript] Executing code for tab ${tabId}:`, code);
+						const result = await scriptExecutionManager.queueScriptExecution(tabId, code);
+
+						return {
+							success: true,
+							result,
+							message: "Code executed successfully. Result includes any console logs captured during execution.",
+						};
+					} catch (error) {
+						return {
+							success: false,
+							error: error instanceof Error ? error.message : String(error),
+							message: "Code execution failed. Check the error for details.",
+						};
+					}
 				},
 			}),
 		};
