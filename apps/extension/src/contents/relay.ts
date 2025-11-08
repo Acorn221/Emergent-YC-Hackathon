@@ -7,6 +7,7 @@ export const config: PlasmoCSConfig = {
 	all_frames: true,
 };
 
+// Relay messages from MAIN world content scripts to background
 relayMessage({
-	name: "example",
+	name: "cache-network",
 });

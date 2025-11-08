@@ -51,7 +51,7 @@
   },
   "prettier": "@acme/prettier-config",
   "manifest": {
-    "host_permissions": [],
+    "host_permissions": ["<all_urls>"],
     "permissions": ["storage", "debugger", "scripting", "webRequest"]
   }
 }
