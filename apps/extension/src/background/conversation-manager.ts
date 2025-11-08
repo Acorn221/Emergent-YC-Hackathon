@@ -66,6 +66,8 @@ interface ConversationState {
 		role: "user" | "assistant";
 		content: string;
 	}>;
+	totalInputTokens: number; // Track token usage
+	totalOutputTokens: number;
 }
 
 class ConversationManager {
@@ -110,11 +112,13 @@ class ConversationManager {
 				abortController,
 				tabId: opts.tabId,
 				messages: [], // Initialize empty history
+				totalInputTokens: 0,
+				totalOutputTokens: 0,
 			};
 			this.conversations.set(opts.conversationId, state);
 		} else {
 			// Continuing conversation - create new AbortController
-			console.log(`[Conversation Manager] 🔄 Continuing existing conversation (${state.messages.length} messages in history)`);
+			console.log(`[Conversation Manager] 🔄 Continuing existing conversation (${state.messages.length} messages, ~${state.totalInputTokens + state.totalOutputTokens} tokens used)`);
 			state.abortController = new AbortController();
 			state.status = "streaming";
 			state.chunks = []; // Clear chunks for new response
@@ -145,7 +149,15 @@ class ConversationManager {
 		if (!state) return;
 
 		try {
-			console.log(`[Conversation Manager] 📡 Starting AI SDK stream with ${state.messages.length} messages in history...`);
+			// Trim message history if getting too large (keep last 10 messages = 5 exchanges)
+			const MAX_HISTORY_MESSAGES = 10;
+			if (state.messages.length > MAX_HISTORY_MESSAGES) {
+				const removed = state.messages.length - MAX_HISTORY_MESSAGES;
+				state.messages = state.messages.slice(-MAX_HISTORY_MESSAGES);
+				console.warn(`[Conversation Manager] ✂️ Trimmed ${removed} old messages to stay under rate limit`);
+			}
+
+			console.log(`[Conversation Manager] 📡 Starting AI SDK stream with ${state.messages.length} messages in history (~${state.totalInputTokens + state.totalOutputTokens} tokens)...`);
 
 			const result = streamText({
 				model: this.anthropic("claude-sonnet-4-5-20250929"),
@@ -227,6 +239,13 @@ Be thorough but accurate. Only report genuine security concerns.`,
 					console.log(`[Conversation Manager] 🔄 Step finished, continuing...`);
 				}
 			}
+
+			// Get usage info from result
+			const usage = await result.usage;
+			state.totalInputTokens += usage.promptTokens;
+			state.totalOutputTokens += usage.completionTokens;
+
+			console.log(`[Conversation Manager] 📊 Token usage: ${usage.promptTokens} in, ${usage.completionTokens} out (Total: ${state.totalInputTokens} + ${state.totalOutputTokens} = ${state.totalInputTokens + state.totalOutputTokens})`);
 
 			// Add assistant response to message history (only if not empty)
 			if (assistantMessage.trim().length > 0) {
