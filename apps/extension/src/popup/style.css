@@ -3,3 +3,212 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Hackery Glitch Effect for Headers */
+.glitch {
+  position: relative;
+  text-shadow: 
+    0.05em 0 0 rgba(255, 0, 0, 0.75),
+    -0.025em -0.05em 0 rgba(0, 255, 0, 0.75),
+    0.025em 0.05em 0 rgba(0, 0, 255, 0.75);
+  animation: glitch 500ms infinite;
+}
+
+.glitch::before,
+.glitch::after {
+  content: attr(data-text);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.glitch::before {
+  left: 2px;
+  text-shadow: -2px 0 #ff00ff;
+  clip: rect(24px, 550px, 90px, 0);
+  animation: glitch-anim 3s infinite linear alternate-reverse;
+}
+
+.glitch::after {
+  left: -2px;
+  text-shadow: -2px 0 #00fff9;
+  clip: rect(85px, 550px, 140px, 0);
+  animation: glitch-anim 2s infinite linear alternate-reverse;
+}
+
+@keyframes glitch {
+  0% {
+    text-shadow: 
+      0.05em 0 0 rgba(255, 0, 0, 0.75),
+      -0.05em -0.025em 0 rgba(0, 255, 0, 0.75),
+      -0.025em 0.05em 0 rgba(0, 0, 255, 0.75);
+  }
+  14% {
+    text-shadow: 
+      0.05em 0 0 rgba(255, 0, 0, 0.75),
+      -0.05em -0.025em 0 rgba(0, 255, 0, 0.75),
+      -0.025em 0.05em 0 rgba(0, 0, 255, 0.75);
+  }
+  15% {
+    text-shadow: 
+      -0.05em -0.025em 0 rgba(255, 0, 0, 0.75),
+      0.025em 0.025em 0 rgba(0, 255, 0, 0.75),
+      -0.05em -0.05em 0 rgba(0, 0, 255, 0.75);
+  }
+  49% {
+    text-shadow: 
+      -0.05em -0.025em 0 rgba(255, 0, 0, 0.75),
+      0.025em 0.025em 0 rgba(0, 255, 0, 0.75),
+      -0.05em -0.05em 0 rgba(0, 0, 255, 0.75);
+  }
+  50% {
+    text-shadow: 
+      0.025em 0.05em 0 rgba(255, 0, 0, 0.75),
+      0.05em 0 0 rgba(0, 255, 0, 0.75),
+      0 -0.05em 0 rgba(0, 0, 255, 0.75);
+  }
+  99% {
+    text-shadow: 
+      0.025em 0.05em 0 rgba(255, 0, 0, 0.75),
+      0.05em 0 0 rgba(0, 255, 0, 0.75),
+      0 -0.05em 0 rgba(0, 0, 255, 0.75);
+  }
+  100% {
+    text-shadow: 
+      -0.025em 0 0 rgba(255, 0, 0, 0.75),
+      -0.025em -0.025em 0 rgba(0, 255, 0, 0.75),
+      -0.025em -0.05em 0 rgba(0, 0, 255, 0.75);
+  }
+}
+
+@keyframes glitch-anim {
+  0% {
+    clip: rect(12px, 9999px, 71px, 0);
+  }
+  10% {
+    clip: rect(85px, 9999px, 28px, 0);
+  }
+  20% {
+    clip: rect(43px, 9999px, 99px, 0);
+  }
+  30% {
+    clip: rect(61px, 9999px, 14px, 0);
+  }
+  40% {
+    clip: rect(2px, 9999px, 88px, 0);
+  }
+  50% {
+    clip: rect(77px, 9999px, 35px, 0);
+  }
+  60% {
+    clip: rect(19px, 9999px, 56px, 0);
+  }
+  70% {
+    clip: rect(91px, 9999px, 8px, 0);
+  }
+  80% {
+    clip: rect(34px, 9999px, 67px, 0);
+  }
+  90% {
+    clip: rect(58px, 9999px, 22px, 0);
+  }
+  100% {
+    clip: rect(73px, 9999px, 41px, 0);
+  }
+}
+
+/* Small glitch for footer */
+.glitch-small {
+  position: relative;
+  display: inline-block;
+  animation: glitch-small 3s infinite;
+}
+
+.glitch-small::before,
+.glitch-small::after {
+  content: attr(data-text);
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.8;
+}
+
+.glitch-small::before {
+  left: 1px;
+  text-shadow: -1px 0 #ff00ff;
+  animation: glitch-small-before 2s infinite linear;
+}
+
+.glitch-small::after {
+  left: -1px;
+  text-shadow: 1px 0 #00fff9;
+  animation: glitch-small-after 3s infinite linear;
+}
+
+@keyframes glitch-small {
+  2%, 64% {
+    transform: translate(1px, 0) skew(0deg);
+  }
+  4%, 60% {
+    transform: translate(-1px, 0) skew(0deg);
+  }
+  62% {
+    transform: translate(0, 0) skew(2deg); 
+  }
+}
+
+@keyframes glitch-small-before {
+  0%, 100% {
+    clip: rect(0px, 9999px, 10px, 0);
+  }
+  50% {
+    clip: rect(5px, 9999px, 15px, 0);
+  }
+}
+
+@keyframes glitch-small-after {
+  0%, 100% {
+    clip: rect(10px, 9999px, 20px, 0);
+  }
+  50% {
+    clip: rect(15px, 9999px, 5px, 0);
+  }
+}
+
+/* Fade in animation */
+@keyframes fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease-out;
+}
+
+/* Scrollbar styling for hackery theme */
+::-webkit-scrollbar {
+  width: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #000;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #0f0;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #0c0;
+}
