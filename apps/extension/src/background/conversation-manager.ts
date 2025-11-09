@@ -923,7 +923,7 @@ Be thorough but accurate. Only report genuine security concerns.`,
 			console.log(`[Conversation Manager] ✅ [SYNC] Scan ID: ${scan.id}`);
 			console.log(`[Conversation Manager] ✅ [SYNC] Vulnerability count: ${scan.vulnerability_count}`);
 			console.log(`[Conversation Manager] ✅ [SYNC] Credits deducted: ${scan.credits_deducted}`);
-			console.log(`[Conversation Manager] ✅ [SYNC] View in dashboard: https://vulnguard-6.preview.emergentagent.com/`);
+			console.log(`[Conversation Manager] ✅ [SYNC] View in dashboard: https://frontend-shield-1.preview.emergentagent.com/`);
 			console.log(`[Conversation Manager] 📤 [SYNC] ========================================`);
 		} catch (error) {
 			console.error(`[Conversation Manager] ❌ [SYNC] ========================================`);

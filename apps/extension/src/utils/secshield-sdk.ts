@@ -112,7 +112,7 @@ export class SecShieldSDK {
 	 */
 	constructor(
 		apiKey: string,
-		baseUrl: string = "https://vulnguard-6.preview.emergentagent.com/api",
+		baseUrl: string = "https://frontend-shield-1.preview.emergentagent.com/api",
 	) {
 		if (!apiKey || apiKey.trim().length === 0) {
 			throw new Error("API key is required");
