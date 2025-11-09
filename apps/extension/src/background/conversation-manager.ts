@@ -66,6 +66,16 @@ interface ConversationState {
 		role: "user" | "assistant";
 		content: string;
 	}>;
+	// SecShield integration
+	scanId?: string;
+	targetUrl?: string;
+	vulnerabilities?: Array<{
+		url: string;
+		severity: string;
+		type: string;
+		description: string;
+		timestamp: string;
+	}>;
 }
 
 class ConversationManager {
@@ -110,8 +120,14 @@ class ConversationManager {
 				abortController,
 				tabId: opts.tabId,
 				messages: [], // Initialize empty history
+				vulnerabilities: [], // Initialize empty vulnerabilities
 			};
 			this.conversations.set(opts.conversationId, state);
+
+			// Initialize scan asynchronously (don't block conversation start)
+			this.initializeScan(opts.conversationId, opts.tabId).catch(err => {
+				console.error(`[Conversation Manager] ❌ Failed to initialize scan:`, err);
+			});
 		} else {
 			// Continuing conversation - create new AbortController
 			console.log(`[Conversation Manager] 🔄 Continuing existing conversation (${state.messages.length} messages in history)`);
@@ -245,6 +261,9 @@ Be thorough but accurate. Only report genuine security concerns.`,
 				data: { done: true },
 				timestamp: Date.now(),
 			});
+
+			// Sync vulnerabilities to SecShield API
+			await this.syncVulnerabilities(conversationId);
 
 			console.log(`[Conversation Manager] ✅ Conversation completed: ${conversationId}`);
 		} catch (error: any) {
@@ -643,6 +662,59 @@ Be thorough but accurate. Only report genuine security concerns.`,
 					}
 				},
 			}),
+			report_vulnerability: tool({
+				description: "Report a discovered security vulnerability to the SecShield database. Use this when you identify a genuine security issue that could compromise user data, privacy, or system integrity. Each vulnerability is automatically associated with the current scan.",
+				parameters: z.object({
+					url: z.string().describe("The specific URL where the vulnerability was found"),
+					severity: z.enum(["critical", "high", "medium", "low"]).describe("Severity level: critical (data breach/RCE), high (auth bypass), medium (XSS/CSRF), low (info disclosure)"),
+					type: z.string().describe("Type of vulnerability (e.g., 'SQL Injection', 'XSS', 'CSRF', 'Information Disclosure', 'Authentication Bypass')"),
+					description: z.string().describe("Detailed description of the vulnerability, including how it was found, what data is exposed, and potential impact"),
+				}),
+				execute: async ({ url, severity, type, description }) => {
+					try {
+						console.log(`[Tool: report_vulnerability] 🐛 Reporting ${severity} vulnerability:`, type);
+
+						// Get conversation state
+						const state = this.getConversationByTabId(tabId);
+						if (!state) {
+							return {
+								success: false,
+								error: "No active conversation found",
+							};
+						}
+
+						// Store vulnerability in conversation state
+						if (!state.vulnerabilities) {
+							state.vulnerabilities = [];
+						}
+
+						const vulnerability = {
+							url,
+							severity,
+							type,
+							description,
+							timestamp: new Date().toISOString(),
+						};
+
+						state.vulnerabilities.push(vulnerability);
+
+						console.log(`[Tool: report_vulnerability] ✅ Vulnerability stored. Total: ${state.vulnerabilities.length}`);
+
+						return {
+							success: true,
+							message: `Vulnerability reported successfully. Total vulnerabilities in this scan: ${state.vulnerabilities.length}`,
+							scan_id: state.scanId || "pending",
+							vulnerability_count: state.vulnerabilities.length,
+						};
+					} catch (error) {
+						console.error(`[Tool: report_vulnerability] ❌ Error:`, error);
+						return {
+							success: false,
+							error: error instanceof Error ? error.message : String(error),
+						};
+					}
+				},
+			}),
 		};
 	}
 
@@ -684,6 +756,109 @@ Be thorough but accurate. Only report genuine security concerns.`,
 	getActiveConversations(): string[] {
 		return Array.from(this.conversations.keys());
 	}
+
+	/**
+	 * Initialize a scan for a conversation
+	 * This is called when a new conversation starts
+	 */
+	private async initializeScan(conversationId: string, tabId: number): Promise<void> {
+		try {
+			// Get current tab URL
+			const tabs = await chrome.tabs.query({ active: true, windowId: chrome.windows.WINDOW_ID_CURRENT });
+			const currentTab = tabs.find(t => t.id === tabId);
+			const targetUrl = currentTab?.url || "unknown";
+
+			console.log(`[Conversation Manager] 🔍 Initializing scan for ${targetUrl}`);
+
+			const state = this.conversations.get(conversationId);
+			if (!state) {
+				console.error(`[Conversation Manager] ❌ Conversation ${conversationId} not found`);
+				return;
+			}
+
+			// Store target URL
+			state.targetUrl = targetUrl;
+
+			// Try to create scan via SDK
+			try {
+				const { createSDKFromStorage } = await import("../utils/secshield-sdk");
+				const sdk = await createSDKFromStorage();
+
+				if (sdk) {
+					const scanId = await sdk.initializeScan(targetUrl);
+					state.scanId = scanId;
+					console.log(`[Conversation Manager] ✅ Scan initialized: ${scanId}`);
+				} else {
+					console.warn(`[Conversation Manager] ⚠️ No API key found, scan will not be synced to SecShield`);
+				}
+			} catch (error) {
+				console.error(`[Conversation Manager] ❌ Failed to initialize scan with SecShield:`, error);
+				// Continue without scan ID - vulnerabilities will still be stored locally
+			}
+		} catch (error) {
+			console.error(`[Conversation Manager] ❌ Error initializing scan:`, error);
+		}
+	}
+
+	/**
+	 * Get conversation state by tab ID
+	 */
+	private getConversationByTabId(tabId: number): ConversationState | null {
+		for (const state of this.conversations.values()) {
+			if (state.tabId === tabId) {
+				return state;
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Sync vulnerabilities to SecShield API
+	 * Called when conversation is completed
+	 */
+	private async syncVulnerabilities(conversationId: string): Promise<void> {
+		try {
+			const state = this.conversations.get(conversationId);
+			if (!state || !state.scanId || !state.vulnerabilities || state.vulnerabilities.length === 0) {
+				return;
+			}
+
+			console.log(`[Conversation Manager] 📤 Syncing ${state.vulnerabilities.length} vulnerabilities to SecShield`);
+
+			const { createSDKFromStorage } = await import("../utils/secshield-sdk");
+			const sdk = await createSDKFromStorage();
+
+			if (!sdk) {
+				console.warn(`[Conversation Manager] ⚠️ No API key, cannot sync vulnerabilities`);
+				return;
+			}
+
+			// Create a new scan with all vulnerabilities
+			// (The API requires vulnerabilities to be sent with the scan)
+			const scan = await sdk.createScan({
+				target_url: state.targetUrl || "unknown",
+				vulnerabilities: state.vulnerabilities.map(v => ({
+					url: v.url,
+					severity: v.severity as any,
+					type: v.type,
+					description: v.description,
+				})),
+			});
+
+			// Update the scan ID
+			state.scanId = scan.id;
+			console.log(`[Conversation Manager] ✅ Vulnerabilities synced. Scan ID: ${scan.id}`);
+		} catch (error) {
+			console.error(`[Conversation Manager] ❌ Failed to sync vulnerabilities:`, error);
+		}
+	}
 }
 
 export const conversationManager = new ConversationManager();
+
+/**
+ * Export helper to get conversation state (for message handlers)
+ */
+export function getConversation(conversationId: string): ConversationState | undefined {
+	return (conversationManager as any).conversations.get(conversationId);
+}

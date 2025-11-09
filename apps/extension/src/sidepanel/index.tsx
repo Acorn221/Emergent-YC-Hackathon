@@ -9,6 +9,7 @@ import type {
 import type { StartConversationRequest } from "../background/messages/start-conversation";
 import { hasApiKey } from "../utils/api-key-storage";
 import ApiKeyInput from "./ApiKeyInput";
+import StatsDisplay from "./StatsDisplay";
 
 import "./style.css";
 
@@ -399,6 +400,11 @@ export default function SidePanel() {
               <div className="text-green-700">CLAUDE-3.5-SONNET</div>
             </div>
           </div>
+        </div>
+        
+        {/* Stats Display */}
+        <div className="mt-3">
+          <StatsDisplay />
         </div>
       </div>
 
