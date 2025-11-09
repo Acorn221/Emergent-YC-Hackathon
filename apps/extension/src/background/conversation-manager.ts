@@ -294,6 +294,7 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 						temperature: 0,
 					}),
 					signal,
+					keepalive: true, // Keep connection alive
 				});
 
 				if (!response.ok) {
@@ -310,7 +311,7 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 				let outputTokens = 0;
 
 				for await (const { event, data } of parseSSE(response)) {
-					console.log(`[Conv Manager] SSE event: ${event}`);
+					console.log(`[Conv Manager] SSE event: ${event}`, JSON.stringify(data).substring(0, 100));
 
 					if (event === "message_start") {
 						if (data.message?.usage) {
@@ -392,10 +393,53 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 					}
 				}
 
+				console.log(`[Conv Manager] 🎬 EXITED parseSSE loop! toolCalls: ${toolCalls.length}, stopReason: ${stopReason}`);
+
 				// Update token usage
 				state.totalInputTokens += inputTokens;
 				state.totalOutputTokens += outputTokens;
 				console.log(`[Conv Manager] 📊 Token usage: ${inputTokens} in, ${outputTokens} out`);
+				console.log(`[Conv Manager] 📋 Stream results: ${toolCalls.length} tool calls, stop_reason: ${stopReason}`);
+				console.log(`[Conv Manager] 📝 Assistant text length: ${assistantText.length}`);
+				if (assistantText.length > 0) {
+					console.log(`[Conv Manager] 📄 Assistant text preview:`, assistantText.substring(0, 200));
+				}
+
+				// HACKATHON MODE: Parse ```json blocks as tool calls if no real tool calls
+				if (toolCalls.length === 0 && assistantText.includes('```json')) {
+					console.log(`[Conv Manager] 🔨 HACKATHON MODE: Parsing markdown tool calls!`);
+					console.log(`[Conv Manager] 📝 Full text to parse:`, assistantText);
+
+					// Match ```json blocks - they can span multiple lines
+					const jsonBlockRegex = /```json\s*\n?\s*(\{[\s\S]*?\})\s*\n?\s*```/g;
+					let match;
+					let foundCount = 0;
+
+					while ((match = jsonBlockRegex.exec(assistantText)) !== null) {
+						foundCount++;
+						console.log(`[Conv Manager] 🎯 Found JSON block ${foundCount}:`, match[1]?.substring(0, 100));
+						try {
+							const toolCall = JSON.parse(match[1] || "");
+							console.log(`[Conv Manager] 📦 Parsed tool call:`, toolCall);
+
+							if (toolCall.tool && toolCall.input) {
+								const id = `manual-${Date.now()}-${Math.random()}`;
+								toolCalls.push({
+									id,
+									name: toolCall.tool,
+									input: toolCall.input,
+								});
+								console.log(`[Conv Manager] ✅ Added markdown tool call:`, toolCall.tool);
+							} else {
+								console.warn(`[Conv Manager] ⚠️ JSON block missing 'tool' or 'input' fields:`, toolCall);
+							}
+						} catch (e) {
+							console.error(`[Conv Manager] ❌ Failed to parse JSON block:`, match[1]?.substring(0, 200), e);
+						}
+					}
+
+					console.log(`[Conv Manager] 📊 Found ${foundCount} JSON blocks, extracted ${toolCalls.length} tool calls`);
+				}
 
 				// Build assistant message content
 				const assistantContent: any[] = [];
