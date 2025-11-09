@@ -16,6 +16,8 @@ export interface GetUpdatesResponse {
 	chunks: StreamChunk[];
 	status: "streaming" | "completed" | "error" | "aborted";
 	fullText: string;
+	scanId?: string;
+	vulnerabilityCount?: number;
 }
 
 const handler: PlasmoMessaging.MessageHandler<GetUpdatesRequest, GetUpdatesResponse> = (req, res) => {

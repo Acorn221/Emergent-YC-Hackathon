@@ -31,3 +31,7 @@ relayMessage({
 relayMessage({
 	name: "script-execution-result",
 });
+
+relayMessage({
+	name: "run-static-analysis",
+});

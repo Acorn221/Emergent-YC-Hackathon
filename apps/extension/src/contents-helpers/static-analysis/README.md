@@ -334,4 +334,4 @@ To add a new analyzer:
 
 ## License
 
-Part of the Chrome Extension Template project.
+Part of the SecShield project.

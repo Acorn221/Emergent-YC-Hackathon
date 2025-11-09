@@ -1,4 +1,5 @@
 import type { PlasmoCSConfig } from "plasmo";
+import { initializeSecurityAnalysis } from "../contents-helpers/static-analysis";
 
 /**
  * Configure which pages this content script should run on
@@ -14,6 +15,14 @@ export const config: PlasmoCSConfig = {
  * Add your custom DOM manipulation or page interaction logic here
  */
 console.log("Content script loaded!");
+
+// Initialize static security analysis and make it available globally
+try {
+  const securityAnalysis = initializeSecurityAnalysis();
+  console.log("🔒 Security analysis initialized. Access via window.__SECURITY_ANALYSIS__");
+} catch (error) {
+  console.error("Failed to initialize security analysis:", error);
+}
 
 // Example: Listen for messages from the background script
 // chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {

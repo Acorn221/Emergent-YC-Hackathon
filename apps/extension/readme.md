@@ -1,6 +1,6 @@
-# Chrome Extension Template
+# SecShield
 
-A modern Chrome extension template built with:
+A security-focused Chrome extension built with:
 - 🎨 [Plasmo](https://plasmo.com/) - Extension framework
 - ⚛️ React - UI library
 - 🎨 TailwindCSS - Styling
@@ -83,17 +83,55 @@ apps/extension/
 - Service worker that runs in the background
 - Handles tRPC API calls
 - Manages extension lifecycle events
+- LLM conversation management with AI SDK
+- Network request caching and analysis
 
 ### Content Script
 - Runs on web pages matching the configured patterns
 - Can interact with the DOM
 - Communicates with background script
+- **Static Security Analysis** - Automated security auditing
 
 ### Popup
 - React-based UI
 - TailwindCSS styling
 - Chrome storage integration
 - Message passing with background script
+
+### Static Security Analysis 🔒
+
+The extension includes a comprehensive static security analysis library that can be used by both developers and the LLM agent to audit web pages for security issues.
+
+**What it analyzes:**
+- **Headers**: CSP, HSTS, X-Frame-Options, X-Content-Type-Options
+- **Cookies**: HttpOnly, Secure, SameSite attributes
+- **Scripts**: Inline scripts, external sources, integrity checks
+- **Forms**: HTTPS submission, autocomplete settings
+- **Storage**: Sensitive data in localStorage/sessionStorage
+
+**Usage Methods:**
+
+1. **Browser Console (Manual)**:
+```javascript
+// Access the global API
+const report = await window.__SECURITY_ANALYSIS__.runAnalysis();
+console.log(report);
+```
+
+2. **LLM Agent** (via conversation):
+```
+"Run a security analysis on this page"
+"Check for critical security vulnerabilities"
+"Analyze cookie security"
+```
+
+3. **Programmatic** (in content scripts):
+```typescript
+import { runAnalysis } from '../contents-helpers/static-analysis';
+const report = await runAnalysis();
+```
+
+For complete API documentation, see [Static Analysis API](./src/contents-helpers/static-analysis/API.md).
 
 ## Configuration
 
@@ -147,11 +185,10 @@ This extension is part of a monorepo and can access shared packages:
 
 ## Customization
 
-1. **Update branding**: Edit `displayName` and `description` in `package.json`
-2. **Change popup UI**: Modify `src/popup/index.tsx`
-3. **Add background logic**: Edit `src/background/index.ts`
-4. **Inject content scripts**: Modify `src/contents/main.ts`
-5. **Add message handlers**: Create files in `src/background/messages/`
+1. **Change popup UI**: Modify `src/popup/index.tsx`
+2. **Add background logic**: Edit `src/background/index.ts`
+3. **Inject content scripts**: Modify `src/contents/main.ts`
+4. **Add message handlers**: Create files in `src/background/messages/`
 
 ## Learn More
 

@@ -691,6 +691,65 @@ Be thorough but accurate. Only report genuine security concerns.`,
 					}
 				},
 			}),
+			run_static_security_analysis: tool({
+				description: "Run a comprehensive static security analysis on the current page. Analyzes headers (CSP, HSTS, X-Frame-Options), cookies (HttpOnly, Secure, SameSite), scripts (inline scripts, external sources), forms (HTTPS submission, autocomplete), and storage (localStorage/sessionStorage for sensitive data). Returns detailed findings with severity levels (critical, high, medium, low, info) and specific recommendations for fixing issues.",
+				parameters: z.object({}),
+				execute: async () => {
+					try {
+						console.log(`[Tool: run_static_security_analysis] 🔒 Running static analysis for tab ${tabId}`);
+
+						// Send message directly to content script
+						// The content script runs in ISOLATED world where it has access to chrome APIs
+						const response = await chrome.tabs.sendMessage(tabId, {
+							type: "RUN_STATIC_ANALYSIS",
+						});
+
+						if (!response || !response.success) {
+							throw new Error(response?.error || "Analysis failed");
+						}
+
+						const report = response.report;
+						console.log(`[Tool: run_static_security_analysis] ✅ Analysis complete. Found ${report.totalFindings} findings`);
+
+						await delay(TOOL_DELAY_MS);
+
+						return {
+							success: true,
+							report: {
+								url: report.url,
+								timestamp: report.timestamp,
+								totalFindings: report.totalFindings,
+								totalDuration: report.totalDuration,
+								findingsBySeverity: report.findingsBySeverity,
+								results: report.results.map((r: any) => ({
+									analyzerName: r.analyzerName,
+									findings: r.findings.map((f: any) => ({
+										id: f.id,
+										severity: f.severity,
+										title: f.title,
+										description: f.description,
+										location: f.location,
+										recommendation: f.recommendation,
+										metadata: f.metadata,
+									})),
+									duration: r.duration,
+									hasErrors: r.hasErrors,
+								})),
+							},
+							message: `Found ${report.totalFindings} security findings (Critical: ${report.findingsBySeverity.critical || 0}, High: ${report.findingsBySeverity.high || 0}, Medium: ${report.findingsBySeverity.medium || 0}, Low: ${report.findingsBySeverity.low || 0}, Info: ${report.findingsBySeverity.info || 0})`,
+						};
+					} catch (error) {
+						console.error(`[Tool: run_static_security_analysis] ❌ Error:`, error);
+						await delay(TOOL_DELAY_MS);
+						return {
+							success: false,
+							error: error instanceof Error ? error.message : String(error),
+							message: "Static analysis failed. Make sure the page has loaded completely and the analysis library is available.",
+						};
+					}
+				},
+			}),
+
 			report_vulnerability: tool({
 				description: "Report a discovered security vulnerability to the SecShield database. Use this when you identify a genuine security issue that could compromise user data, privacy, or system integrity. Each vulnerability is automatically associated with the current scan.",
 				parameters: z.object({
@@ -775,6 +834,8 @@ Be thorough but accurate. Only report genuine security concerns.`,
 		chunks: StreamChunk[];
 		status: ConversationState["status"];
 		fullText: string;
+		scanId?: string;
+		vulnerabilityCount?: number;
 	} | null {
 		const state = this.conversations.get(conversationId);
 		if (!state) {
@@ -789,6 +850,8 @@ Be thorough but accurate. Only report genuine security concerns.`,
 			chunks,
 			status: state.status,
 			fullText: state.fullText,
+			scanId: state.scanId,
+			vulnerabilityCount: state.vulnerabilities?.length || 0,
 		};
 	}
 

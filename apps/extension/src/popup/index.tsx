@@ -37,8 +37,8 @@ const IndexPopup = () => {
           <div className="flex items-center gap-3">
             <img src={icon} alt="icon" className="w-12 h-12 border-2 border-green-400 rounded p-1 shadow-[0_0_10px_rgba(0,255,0,0.5)]" />
             <div>
-              <h1 className="text-xl font-bold tracking-wider glitch" data-text="[EXTENSION.EXE]">
-                [EXTENSION.EXE]
+              <h1 className="text-xl font-bold tracking-wider glitch" data-text="[SECSHIELD.EXE]">
+                [SECSHIELD.EXE]
               </h1>
               <div className="text-xs text-green-500 flex items-center gap-2">
                 <span className="animate-pulse">●</span>

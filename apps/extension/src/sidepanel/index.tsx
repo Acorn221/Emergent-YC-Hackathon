@@ -38,6 +38,8 @@ export default function SidePanel() {
   );
   const [currentTabId, setCurrentTabId] = useState<number | null>(null);
   const [cacheCount, setCacheCount] = useState<number>(0);
+  const [scanId, setScanId] = useState<string | null>(null);
+  const [vulnerabilityCount, setVulnerabilityCount] = useState<number>(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const cacheCountRef = useRef<NodeJS.Timeout | null>(null);
@@ -177,6 +179,14 @@ export default function SidePanel() {
           });
         }
 
+        // Update scan ID and vulnerability count if available
+        if (updates.scanId) {
+          setScanId(updates.scanId);
+        }
+        if (typeof updates.vulnerabilityCount === 'number') {
+          setVulnerabilityCount(updates.vulnerabilityCount);
+        }
+
         // Check if done
         if (updates.status !== "streaming") {
           if (pollingRef.current) {
@@ -298,6 +308,10 @@ export default function SidePanel() {
       },
     ]);
 
+    // Reset scan state
+    setScanId(null);
+    setVulnerabilityCount(0);
+
     console.log("[SidePanel] 🔄 Conversation cleared, new session started");
   };
 
@@ -406,6 +420,35 @@ export default function SidePanel() {
         <div className="mt-3">
           <StatsDisplay />
         </div>
+
+        {/* Scan Link Display */}
+        {scanId && vulnerabilityCount > 0 && (
+          <div className="mt-3 rounded border border-red-500/50 bg-red-950/30 p-3">
+            <div className="mb-2 flex items-center gap-2">
+              <span className="text-xs font-bold text-red-400">
+                🔒 SECURITY SCAN ACTIVE
+              </span>
+              <span className="rounded border border-red-700 bg-red-900/50 px-2 py-0.5 text-[10px] text-red-300">
+                {vulnerabilityCount} {vulnerabilityCount === 1 ? 'VULNERABILITY' : 'VULNERABILITIES'}
+              </span>
+            </div>
+            <a
+              href={`https://vulnguard-6.preview.emergentagent.com/scans/${scanId}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block rounded border border-red-400/50 bg-red-900/40 px-3 py-2 text-xs text-red-300 transition-all hover:border-red-400 hover:bg-red-900/60 hover:text-red-200 hover:shadow-[0_0_10px_rgba(255,0,0,0.3)]"
+            >
+              <div className="flex items-center justify-between">
+                <span className="font-mono">
+                  VIEW SCAN REPORT →
+                </span>
+                <span className="text-[10px] text-red-500">
+                  ID: {scanId.substring(0, 8)}...
+                </span>
+              </div>
+            </a>
+          </div>
+        )}
       </div>
 
       {/* Messages Container */}

@@ -1,9 +1,9 @@
 {
   "name": "@acme/extension",
-  "displayName": "Chrome Extension Template",
+  "displayName": "SecShield",
   "version": "0.0.1",
-  "description": "A Chrome extension template with Plasmo, React, TailwindCSS, and tRPC integration",
-  "author": "Your Name",
+  "description": "SecShield - Advanced web security analysis and protection extension",
+  "author": "SecShield Team",
   "scripts": {
     "dev": "pnpm with-dev-env plasmo dev",
     "build": "pnpm with-prod-env plasmo build",
