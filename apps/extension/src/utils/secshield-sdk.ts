@@ -3,6 +3,8 @@
  * TypeScript client for the SecShield vulnerability scanning API
  */
 
+import { getApiKey } from "./api-key-storage";
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -347,7 +349,6 @@ export class SecShieldSDK {
  * Convenience function for use within the extension
  */
 export async function createSDKFromStorage(): Promise<SecShieldSDK | null> {
-	const { getApiKey } = await import("./api-key-storage");
 	const apiKey = await getApiKey();
 
 	if (!apiKey) {

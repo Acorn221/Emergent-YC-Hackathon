@@ -16,6 +16,15 @@ import {
 	getCacheStatistics
 } from "./cache-state";
 import { scriptExecutionManager } from "./script-execution-manager";
+import { createSDKFromStorage } from "../utils/secshield-sdk";
+
+/**
+ * Utility function to add delays between tool calls
+ */
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Tool execution delay (in milliseconds)
+const TOOL_DELAY_MS = 1500; // 1.5 second delay between tool calls
 
 export type StreamChunk =
 	| {
@@ -124,10 +133,10 @@ class ConversationManager {
 			};
 			this.conversations.set(opts.conversationId, state);
 
-			// Initialize scan asynchronously (don't block conversation start)
-			this.initializeScan(opts.conversationId, opts.tabId).catch(err => {
-				console.error(`[Conversation Manager] ❌ Failed to initialize scan:`, err);
-			});
+			// Initialize scan and WAIT for it to complete
+			console.log(`[Conversation Manager] 🔍 Initializing scan for conversation ${opts.conversationId}...`);
+			await this.initializeScan(opts.conversationId, opts.tabId);
+			console.log(`[Conversation Manager] ✅ Scan initialization complete for ${opts.conversationId}`);
 		} else {
 			// Continuing conversation - create new AbortController
 			console.log(`[Conversation Manager] 🔄 Continuing existing conversation (${state.messages.length} messages in history)`);
@@ -303,6 +312,8 @@ Be thorough but accurate. Only report genuine security concerns.`,
 					const offsetNum = offset || 0;
 					const limited = requests.slice(offsetNum, offsetNum + limitNum);
 
+					await delay(TOOL_DELAY_MS);
+
 					return {
 						total: requests.length,
 						returned: limited.length,
@@ -339,6 +350,7 @@ Be thorough but accurate. Only report genuine security concerns.`,
 					const request = getCacheEntry(requestId, tabId);
 
 					if (!request) {
+						await delay(TOOL_DELAY_MS);
 						return { error: `Request not found: ${requestId}` };
 					}
 
@@ -358,6 +370,8 @@ Be thorough but accurate. Only report genuine security concerns.`,
 							? `${request.response.body.substring(0, maxBodySize)}\n... [truncated, ${responseBodySize} total chars, use get_request_body_chunk to fetch more]`
 							: request.response.body
 						: undefined;
+
+					await delay(TOOL_DELAY_MS);
 
 					return {
 						id: request.id,
@@ -406,12 +420,14 @@ Be thorough but accurate. Only report genuine security concerns.`,
 					const request = getCacheEntry(requestId, tabId);
 
 					if (!request) {
+						await delay(TOOL_DELAY_MS);
 						return { error: `Request not found: ${requestId}` };
 					}
 
 					const body = bodyType === "request" ? request.request.body : request.response.body;
 
 					if (!body) {
+						await delay(TOOL_DELAY_MS);
 						return { error: `No ${bodyType} body available for this request` };
 					}
 
@@ -419,6 +435,8 @@ Be thorough but accurate. Only report genuine security concerns.`,
 					const chunk = body.substring(offset, offset + maxLength);
 					const totalSize = body.length;
 					const hasMore = offset + maxLength < totalSize;
+
+					await delay(TOOL_DELAY_MS);
 
 					return {
 						requestId,
@@ -458,6 +476,8 @@ Be thorough but accurate. Only report genuine security concerns.`,
 							maxStatus,
 						}).filter(r => !url || results.some(ur => ur.id === r.id));
 					}
+
+					await delay(TOOL_DELAY_MS);
 
 					return {
 						found: results.length,
@@ -518,6 +538,8 @@ Be thorough but accurate. Only report genuine security concerns.`,
 					}
 
 					const maxLimit = Math.min(limit, 15); // Cap at 15 instead of 20
+
+					await delay(TOOL_DELAY_MS);
 
 					return {
 						query,
@@ -591,6 +613,8 @@ Be thorough but accurate. Only report genuine security concerns.`,
 							args: [variableName, exposedData],
 						});
 
+						await delay(TOOL_DELAY_MS);
+
 						return {
 							success: true,
 							exposedCount: exposedData.length,
@@ -617,6 +641,8 @@ Be thorough but accurate. Only report genuine security concerns.`,
 					const enrichedCount = allRequests.filter(r => r.metadata.hasWebRequestData).length;
 					const withCookies = allRequests.filter(r => (r.metadata.cookies?.length || 0) > 0).length;
 					const withAuth = allRequests.filter(r => r.metadata.authHeaders?.authorization).length;
+
+					await delay(TOOL_DELAY_MS);
 
 					return {
 						totalRequests: stats.totalEntries,
@@ -647,6 +673,8 @@ Be thorough but accurate. Only report genuine security concerns.`,
 						// Log the result to console for debugging
 						console.log(`[Tool: execute_javascript] ✅ Result:\n${result}`);
 
+						await delay(TOOL_DELAY_MS);
+
 						return {
 							success: true,
 							result,
@@ -654,6 +682,7 @@ Be thorough but accurate. Only report genuine security concerns.`,
 						};
 					} catch (error) {
 						console.error(`[Tool: execute_javascript] ❌ Error:`, error);
+						await delay(TOOL_DELAY_MS);
 						return {
 							success: false,
 							error: error instanceof Error ? error.message : String(error),
@@ -672,20 +701,33 @@ Be thorough but accurate. Only report genuine security concerns.`,
 				}),
 				execute: async ({ url, severity, type, description }) => {
 					try {
-						console.log(`[Tool: report_vulnerability] 🐛 Reporting ${severity} vulnerability:`, type);
+						console.log(`[Tool: report_vulnerability] 🐛 ========================================`);
+						console.log(`[Tool: report_vulnerability] 🐛 REPORTING VULNERABILITY`);
+						console.log(`[Tool: report_vulnerability] 🐛 URL: ${url}`);
+						console.log(`[Tool: report_vulnerability] 🐛 Severity: ${severity}`);
+						console.log(`[Tool: report_vulnerability] 🐛 Type: ${type}`);
+						console.log(`[Tool: report_vulnerability] 🐛 Description: ${description.substring(0, 100)}...`);
+						console.log(`[Tool: report_vulnerability] 🐛 ========================================`);
 
 						// Get conversation state
 						const state = this.getConversationByTabId(tabId);
 						if (!state) {
+							console.error(`[Tool: report_vulnerability] ❌ No active conversation found for tab ${tabId}`);
 							return {
 								success: false,
 								error: "No active conversation found",
 							};
 						}
 
+						console.log(`[Tool: report_vulnerability] 📋 Found conversation: ${state.id}`);
+						console.log(`[Tool: report_vulnerability] 📋 Scan ID: ${state.scanId || 'NOT SET'}`);
+						console.log(`[Tool: report_vulnerability] 📋 Target URL: ${state.targetUrl || 'NOT SET'}`);
+						console.log(`[Tool: report_vulnerability] 📋 Current vulnerabilities count: ${state.vulnerabilities?.length || 0}`);
+
 						// Store vulnerability in conversation state
 						if (!state.vulnerabilities) {
 							state.vulnerabilities = [];
+							console.log(`[Tool: report_vulnerability] 📝 Initialized vulnerabilities array`);
 						}
 
 						const vulnerability = {
@@ -698,7 +740,16 @@ Be thorough but accurate. Only report genuine security concerns.`,
 
 						state.vulnerabilities.push(vulnerability);
 
-						console.log(`[Tool: report_vulnerability] ✅ Vulnerability stored. Total: ${state.vulnerabilities.length}`);
+						console.log(`[Tool: report_vulnerability] ✅✅✅ VULNERABILITY STORED LOCALLY`);
+						console.log(`[Tool: report_vulnerability] 📊 Total vulnerabilities in this conversation: ${state.vulnerabilities.length}`);
+						console.log(`[Tool: report_vulnerability] 📤 Will be synced to SecShield API when conversation completes`);
+						if (state.scanId) {
+							console.log(`[Tool: report_vulnerability] 🆔 Will be associated with Scan ID: ${state.scanId}`);
+						} else {
+							console.warn(`[Tool: report_vulnerability] ⚠️ WARNING: No scan ID set - vulnerabilities may not sync properly!`);
+						}
+
+						await delay(TOOL_DELAY_MS);
 
 						return {
 							success: true,
@@ -707,7 +758,9 @@ Be thorough but accurate. Only report genuine security concerns.`,
 							vulnerability_count: state.vulnerabilities.length,
 						};
 					} catch (error) {
-						console.error(`[Tool: report_vulnerability] ❌ Error:`, error);
+						console.error(`[Tool: report_vulnerability] ❌ ERROR:`, error);
+						console.error(`[Tool: report_vulnerability] ❌ Stack:`, error instanceof Error ? error.stack : 'N/A');
+						await delay(TOOL_DELAY_MS);
 						return {
 							success: false,
 							error: error instanceof Error ? error.message : String(error),
@@ -763,40 +816,47 @@ Be thorough but accurate. Only report genuine security concerns.`,
 	 */
 	private async initializeScan(conversationId: string, tabId: number): Promise<void> {
 		try {
+			console.log(`[Conversation Manager] 🔍 [SCAN INIT] Starting scan initialization for conversation ${conversationId}`);
+
 			// Get current tab URL
 			const tabs = await chrome.tabs.query({ active: true, windowId: chrome.windows.WINDOW_ID_CURRENT });
 			const currentTab = tabs.find(t => t.id === tabId);
 			const targetUrl = currentTab?.url || "unknown";
 
-			console.log(`[Conversation Manager] 🔍 Initializing scan for ${targetUrl}`);
+			console.log(`[Conversation Manager] 🔍 [SCAN INIT] Target URL: ${targetUrl}`);
 
 			const state = this.conversations.get(conversationId);
 			if (!state) {
-				console.error(`[Conversation Manager] ❌ Conversation ${conversationId} not found`);
+				console.error(`[Conversation Manager] ❌ [SCAN INIT] Conversation ${conversationId} not found`);
 				return;
 			}
 
 			// Store target URL
 			state.targetUrl = targetUrl;
+			console.log(`[Conversation Manager] ✅ [SCAN INIT] Target URL stored: ${targetUrl}`);
 
 			// Try to create scan via SDK
 			try {
-				const { createSDKFromStorage } = await import("../utils/secshield-sdk");
+				console.log(`[Conversation Manager] 🔄 [SCAN INIT] Loading SecShield SDK...`);
 				const sdk = await createSDKFromStorage();
 
 				if (sdk) {
+					console.log(`[Conversation Manager] 🔄 [SCAN INIT] SDK loaded, creating scan...`);
 					const scanId = await sdk.initializeScan(targetUrl);
 					state.scanId = scanId;
-					console.log(`[Conversation Manager] ✅ Scan initialized: ${scanId}`);
+					console.log(`[Conversation Manager] ✅✅✅ [SCAN INIT] SCAN CREATED SUCCESSFULLY! Scan ID: ${scanId}`);
+					console.log(`[Conversation Manager] 📋 [SCAN INIT] Vulnerabilities will be synced to this scan when conversation completes`);
 				} else {
-					console.warn(`[Conversation Manager] ⚠️ No API key found, scan will not be synced to SecShield`);
+					console.warn(`[Conversation Manager] ⚠️ [SCAN INIT] No API key found in storage - scan will NOT be synced to SecShield API`);
+					console.warn(`[Conversation Manager] ⚠️ [SCAN INIT] Vulnerabilities will only be stored locally`);
 				}
 			} catch (error) {
-				console.error(`[Conversation Manager] ❌ Failed to initialize scan with SecShield:`, error);
+				console.error(`[Conversation Manager] ❌ [SCAN INIT] Failed to initialize scan with SecShield API:`, error);
+				console.error(`[Conversation Manager] ❌ [SCAN INIT] Error details:`, error instanceof Error ? error.message : String(error));
 				// Continue without scan ID - vulnerabilities will still be stored locally
 			}
 		} catch (error) {
-			console.error(`[Conversation Manager] ❌ Error initializing scan:`, error);
+			console.error(`[Conversation Manager] ❌ [SCAN INIT] Fatal error initializing scan:`, error);
 		}
 	}
 
@@ -819,19 +879,30 @@ Be thorough but accurate. Only report genuine security concerns.`,
 	private async syncVulnerabilities(conversationId: string): Promise<void> {
 		try {
 			const state = this.conversations.get(conversationId);
-			if (!state || !state.scanId || !state.vulnerabilities || state.vulnerabilities.length === 0) {
+
+			console.log(`[Conversation Manager] 📤 [SYNC] ========================================`);
+			console.log(`[Conversation Manager] 📤 [SYNC] SYNCING VULNERABILITIES TO SECSHIELD API`);
+			console.log(`[Conversation Manager] 📤 [SYNC] Conversation ID: ${conversationId}`);
+			console.log(`[Conversation Manager] 📤 [SYNC] Scan ID: ${state?.scanId || 'NOT SET'}`);
+			console.log(`[Conversation Manager] 📤 [SYNC] Vulnerabilities count: ${state?.vulnerabilities?.length || 0}`);
+			console.log(`[Conversation Manager] 📤 [SYNC] Target URL: ${state?.targetUrl || 'NOT SET'}`);
+
+			if (!state || !state.vulnerabilities || state.vulnerabilities.length === 0) {
+				console.log(`[Conversation Manager] 📤 [SYNC] No vulnerabilities to sync - skipping`);
 				return;
 			}
 
-			console.log(`[Conversation Manager] 📤 Syncing ${state.vulnerabilities.length} vulnerabilities to SecShield`);
-
-			const { createSDKFromStorage } = await import("../utils/secshield-sdk");
+			console.log(`[Conversation Manager] 📤 [SYNC] Loading SecShield SDK...`);
 			const sdk = await createSDKFromStorage();
 
 			if (!sdk) {
-				console.warn(`[Conversation Manager] ⚠️ No API key, cannot sync vulnerabilities`);
+				console.warn(`[Conversation Manager] ⚠️ [SYNC] No API key found - cannot sync vulnerabilities to SecShield`);
+				console.warn(`[Conversation Manager] ⚠️ [SYNC] Vulnerabilities remain stored locally only`);
 				return;
 			}
+
+			console.log(`[Conversation Manager] 📤 [SYNC] SDK loaded successfully`);
+			console.log(`[Conversation Manager] 📤 [SYNC] Creating scan with ${state.vulnerabilities.length} vulnerabilities...`);
 
 			// Create a new scan with all vulnerabilities
 			// (The API requires vulnerabilities to be sent with the scan)
@@ -847,9 +918,20 @@ Be thorough but accurate. Only report genuine security concerns.`,
 
 			// Update the scan ID
 			state.scanId = scan.id;
-			console.log(`[Conversation Manager] ✅ Vulnerabilities synced. Scan ID: ${scan.id}`);
+
+			console.log(`[Conversation Manager] ✅✅✅ [SYNC] VULNERABILITIES SYNCED SUCCESSFULLY!`);
+			console.log(`[Conversation Manager] ✅ [SYNC] Scan ID: ${scan.id}`);
+			console.log(`[Conversation Manager] ✅ [SYNC] Vulnerability count: ${scan.vulnerability_count}`);
+			console.log(`[Conversation Manager] ✅ [SYNC] Credits deducted: ${scan.credits_deducted}`);
+			console.log(`[Conversation Manager] ✅ [SYNC] View in dashboard: https://vulnguard-6.preview.emergentagent.com/`);
+			console.log(`[Conversation Manager] 📤 [SYNC] ========================================`);
 		} catch (error) {
-			console.error(`[Conversation Manager] ❌ Failed to sync vulnerabilities:`, error);
+			console.error(`[Conversation Manager] ❌ [SYNC] ========================================`);
+			console.error(`[Conversation Manager] ❌ [SYNC] FAILED TO SYNC VULNERABILITIES`);
+			console.error(`[Conversation Manager] ❌ [SYNC] Error:`, error);
+			console.error(`[Conversation Manager] ❌ [SYNC] Error message:`, error instanceof Error ? error.message : String(error));
+			console.error(`[Conversation Manager] ❌ [SYNC] Stack:`, error instanceof Error ? error.stack : 'N/A');
+			console.error(`[Conversation Manager] ❌ [SYNC] ========================================`);
 		}
 	}
 }
