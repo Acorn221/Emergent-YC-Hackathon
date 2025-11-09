@@ -244,6 +244,18 @@ NOT vulnerabilities:
 - Public information that is meant to be visible
 - Features working as intended
 
+TOOL USAGE GUIDELINES:
+1. ALWAYS read tool descriptions carefully to understand required vs optional parameters
+2. When a tool requires a parameter (like requestId), you MUST provide it from previous tool results
+3. If you get an error saying a parameter is missing or invalid, READ THE ERROR and provide the correct parameter
+4. DO NOT repeatedly call the same tool with empty/invalid parameters
+5. Use get_network_requests to get IDs, then use those IDs in get_request_details
+
+Example workflow:
+1. Call get_network_requests → receives list with IDs like "fetch-123-456"
+2. Call get_request_details with {"requestId": "fetch-123-456"} ← USE THE ID FROM STEP 1
+3. If you get an error, check what parameter you're missing and provide it
+
 Use your tools to:
 1. Inspect network requests for sensitive data exposure
 2. Execute JavaScript to check DOM, localStorage, cookies for security issues
@@ -256,6 +268,9 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 
 			// Conversation loop - keep calling API until no more tool calls
 			let maxTurns = 500; // Safety limit
+			let consecutiveErrors = 0;
+			let lastErrorToolName = "";
+
 			for (let turn = 0; turn < maxTurns; turn++) {
 				console.log(`[Conversation Manager] 🔄 Turn ${turn + 1}/${maxTurns}`);
 
@@ -288,7 +303,8 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 				// Parse SSE stream
 				let assistantText = "";
 				const toolCalls: Array<{ id: string; name: string; input: any }> = [];
-				const currentToolInputs = new Map<number, string>(); // Track JSON accumulation
+				const currentToolInputs = new Map<number, string>(); // Track JSON accumulation (SSE index -> json string)
+				const indexToToolCallIndex = new Map<number, number>(); // Map SSE index to toolCalls array index
 				let stopReason: string | null = null;
 				let inputTokens = 0;
 				let outputTokens = 0;
@@ -303,13 +319,18 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 					} else if (event === "content_block_start") {
 						const block = data.content_block;
 						if (block?.type === "tool_use") {
-							const index = data.index;
+							const sseIndex = data.index;
+							const toolCallIndex = toolCalls.length; // This will be the index in our array
+							console.log(`[Conv Manager] 🆕 New tool_use block at SSE index ${sseIndex}, will be toolCalls[${toolCallIndex}]:`, block.name);
+
 							toolCalls.push({
 								id: block.id,
 								name: block.name,
 								input: {}, // Will be filled by input_json_delta
 							});
-							currentToolInputs.set(index, "");
+							currentToolInputs.set(sseIndex, "");
+							indexToToolCallIndex.set(sseIndex, toolCallIndex);
+							console.log(`[Conv Manager] 🗂️ toolCalls array now has ${toolCalls.length} items`);
 						}
 					} else if (event === "content_block_delta") {
 						const delta = data.delta;
@@ -324,26 +345,33 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 							state.fullText += delta.text;
 							console.log(`[Conv Manager] 📝 Text delta (${delta.text.length} chars)`);
 						} else if (delta?.type === "input_json_delta") {
-							const index = data.index;
-							const current = currentToolInputs.get(index) || "";
-							currentToolInputs.set(index, current + delta.partial_json);
+							const sseIndex = data.index;
+							const current = currentToolInputs.get(sseIndex) || "";
+							currentToolInputs.set(sseIndex, current + delta.partial_json);
+							console.log(`[Conv Manager] 📥 Accumulating JSON for SSE index ${sseIndex}: "${delta.partial_json}"`);
 						}
 					} else if (event === "content_block_stop") {
 						// Tool input complete - parse accumulated JSON
-						const index = data.index;
-						const jsonStr = currentToolInputs.get(index);
-						if (jsonStr !== undefined && toolCalls[index]) {
+						const sseIndex = data.index;
+						const toolCallIndex = indexToToolCallIndex.get(sseIndex);
+						const jsonStr = currentToolInputs.get(sseIndex);
+
+						console.log(`[Conv Manager] 🛑 Block stop for SSE index ${sseIndex}, toolCallIndex: ${toolCallIndex}, jsonStr: "${jsonStr}"`);
+
+						if (jsonStr !== undefined && toolCallIndex !== undefined && toolCalls[toolCallIndex]) {
 							try {
-								toolCalls[index].input = JSON.parse(jsonStr);
-								console.log(`[Conv Manager] 🔧 Tool call complete:`, toolCalls[index]);
+								toolCalls[toolCallIndex].input = JSON.parse(jsonStr);
+								console.log(`[Conv Manager] 🔧 Tool call complete:`, toolCalls[toolCallIndex]);
+								console.log(`[Conv Manager] 🔍 Raw JSON string:`, jsonStr);
+								console.log(`[Conv Manager] 🔍 Parsed input:`, toolCalls[toolCallIndex].input);
 
 								// Emit tool-call chunk
 								state.chunks.push({
 									type: "tool-call",
 									data: {
-										toolCallId: toolCalls[index].id,
-										toolName: toolCalls[index].name,
-										args: toolCalls[index].input,
+										toolCallId: toolCalls[toolCallIndex].id,
+										toolName: toolCalls[toolCallIndex].name,
+										args: toolCalls[toolCallIndex].input,
 									},
 									timestamp: Date.now(),
 								});
@@ -407,11 +435,39 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 					try {
 						const result = await this.executeToolManually(toolCall.name, toolCall.input, tabId);
 
+						// Check if result is an error
+						const resultStr = typeof result === "string" ? result : JSON.stringify(result);
+						if (resultStr.includes('"error"') || resultStr.includes('Request not found') || resultStr.includes('undefined')) {
+							// This is an error result
+							if (toolCall.name === lastErrorToolName) {
+								consecutiveErrors++;
+								console.warn(`[Conv Manager] ⚠️ Consecutive error ${consecutiveErrors} for tool: ${toolCall.name}`);
+
+								if (consecutiveErrors >= 3) {
+									console.error(`[Conv Manager] 🛑 Stopping - model is looping with same error!`);
+									state.chunks.push({
+										type: "error",
+										data: `Model is repeatedly making the same mistake with tool '${toolCall.name}'. Please check your tool usage and provide required parameters.`,
+										timestamp: Date.now(),
+									});
+									state.status = "error";
+									return;
+								}
+							} else {
+								consecutiveErrors = 1;
+								lastErrorToolName = toolCall.name;
+							}
+						} else {
+							// Success - reset error counter
+							consecutiveErrors = 0;
+							lastErrorToolName = "";
+						}
+
 						// Add tool result to the SAME assistant message
 						assistantContent.push({
 							type: "tool_result",
 							tool_use_id: toolCall.id,
-							content: typeof result === "string" ? result : JSON.stringify(result),
+							content: resultStr,
 						});
 
 						// Emit tool-result chunk
@@ -427,6 +483,9 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 						console.log(`[Conv Manager] ✅ Tool result:`, result);
 					} catch (error: any) {
 						console.error(`[Conv Manager] ❌ Tool execution error:`, error);
+						consecutiveErrors++;
+						lastErrorToolName = toolCall.name;
+
 						assistantContent.push({
 							type: "tool_result",
 							tool_use_id: toolCall.id,
