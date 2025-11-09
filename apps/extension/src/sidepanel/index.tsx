@@ -7,6 +7,8 @@ import type {
   GetUpdatesResponse,
 } from "../background/messages/get-conversation-updates";
 import type { StartConversationRequest } from "../background/messages/start-conversation";
+import { hasApiKey } from "../utils/api-key-storage";
+import ApiKeyInput from "./ApiKeyInput";
 
 import "./style.css";
 
@@ -19,6 +21,7 @@ interface Message {
 }
 
 export default function SidePanel() {
+  const [hasKey, setHasKey] = useState<boolean | null>(null);
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "welcome",
@@ -37,6 +40,13 @@ export default function SidePanel() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const cacheCountRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Check for API key on mount
+  useEffect(() => {
+    hasApiKey().then((exists) => {
+      setHasKey(exists);
+    });
+  }, []);
 
   // Get current tab ID on mount
   useEffect(() => {
@@ -326,6 +336,34 @@ export default function SidePanel() {
     });
   };
 
+  const handleApiKeySet = () => {
+    setHasKey(true);
+  };
+
+  // Show loading state while checking for API key
+  if (hasKey === null) {
+    return (
+      <div className="flex h-screen w-full items-center justify-center bg-black font-mono text-green-400">
+        <div className="text-center">
+          <div className="mb-4 text-2xl font-bold tracking-wider">
+            [INITIALIZING...]
+          </div>
+          <div className="flex items-center justify-center gap-1">
+            <span className="typing-dot">●</span>
+            <span className="typing-dot">●</span>
+            <span className="typing-dot">●</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Show API key input if no key is set
+  if (!hasKey) {
+    return <ApiKeyInput onKeySet={handleApiKeySet} />;
+  }
+
+  // Show main chat interface if API key exists
   return (
     <div className="relative flex h-screen w-full flex-col overflow-hidden bg-black font-mono text-green-400">
       {/* Scan line effect */}
