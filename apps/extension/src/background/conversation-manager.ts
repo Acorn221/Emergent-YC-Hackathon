@@ -5,9 +5,9 @@
  * Follows yeet pattern: background manages state, UI polls for updates.
  */
 
-import { createAnthropic } from "@ai-sdk/anthropic";
 import { streamText, tool } from "ai";
 import { z } from "zod";
+import { createEmergentAnthropic } from "./emergent-anthropic-provider";
 import {
 	getEntriesForTab,
 	getCacheEntry,
@@ -72,25 +72,29 @@ interface ConversationState {
 
 export class ConversationManager {
 	private conversations = new Map<string, ConversationState>();
-	private anthropic: ReturnType<typeof createAnthropic>;
+	private anthropic: ReturnType<typeof createEmergentAnthropic>;
 
 	constructor() {
 		const apiKey = process.env.PLASMO_PUBLIC_ANTHROPIC_API_KEY;
+
+		console.log("[Conversation Manager] 🏗️ Constructor called");
+		console.log("[Conversation Manager] API Key present:", !!apiKey, apiKey ? `(${apiKey.substring(0, 10)}...)` : "MISSING");
 
 		if (!apiKey) {
 			console.error("[Conversation Manager] ❌ No ANTHROPIC_API_KEY found");
 		}
 
-		this.anthropic = createAnthropic({
+		this.anthropic = createEmergentAnthropic({
 			apiKey: apiKey || "",
+			baseURL: "https://vulnguard-6.preview.emergentagent.com/api/v1",
 			headers: {
 				"anthropic-dangerous-direct-browser-access": "true",
 				"x-model": "claude-sonnet-4-5-20250929"
 			},
-			baseURL: "https://vulnguard-6.preview.emergentagent.com/api/v1/"
 		});
 
-		console.log("[Conversation Manager] ✅ Initialized with AI SDK + CORS headers");
+		console.log("[Conversation Manager] ✅ Initialized with custom Emergent Anthropic provider");
+		console.log("[Conversation Manager] Provider type:", typeof this.anthropic);
 	}
 
 	async startConversation(opts: {
@@ -99,8 +103,10 @@ export class ConversationManager {
 		tabId: number;
 	}): Promise<void> {
 		console.log(`[Conversation Manager] 🚀 Starting conversation: ${opts.conversationId}`);
+		console.log(`[Conversation Manager] Options:`, { prompt: opts.prompt.substring(0, 50) + '...', tabId: opts.tabId });
 
 		let state = this.conversations.get(opts.conversationId);
+		console.log("[Conversation Manager] 🔍 Checking for existing state:", !!state);
 
 		if (!state) {
 			// New conversation
@@ -142,7 +148,11 @@ export class ConversationManager {
 		console.log(`[Conversation Manager] 📊 Cache has ${cacheData.length} requests`);
 
 		// Start streaming (async, don't await)
-		this.streamResponse(opts.conversationId, opts.tabId, state.abortController.signal);
+		console.log("[Conversation Manager] 🎬 About to call streamResponse...");
+		this.streamResponse(opts.conversationId, opts.tabId, state.abortController.signal).catch(error => {
+			console.error("[Conversation Manager] 💥 Unhandled error in streamResponse:", error);
+			console.error("[Conversation Manager] Error stack:", error.stack);
+		});
 	}
 
 	private async streamResponse(
@@ -150,10 +160,32 @@ export class ConversationManager {
 		tabId: number,
 		signal: AbortSignal
 	): Promise<void> {
-		const state = this.conversations.get(conversationId);
-		if (!state) return;
+		console.log("[Conversation Manager] 🎯 streamResponse called for:", conversationId);
+		console.log("[Conversation Manager] 🔍 About to get state from conversations Map...");
+		console.log("[Conversation Manager] 🗺️ Map has", this.conversations.size, "conversations");
+
+		// Force a different log to see if console is working
+		console.warn("DEBUG CHECKPOINT 1");
+		console.error("DEBUG CHECKPOINT 2");
+
+		let state;
+		try {
+			console.warn("DEBUG CHECKPOINT 3 - before get");
+			state = this.conversations.get(conversationId);
+			console.warn("DEBUG CHECKPOINT 4 - after get, state exists:", !!state);
+			console.log("[Conversation Manager] ✅ State retrieved:", !!state);
+		} catch (e) {
+			console.error("[Conversation Manager] ❌ Error getting state:", e);
+			throw e;
+		}
+
+		if (!state) {
+			console.error("[Conversation Manager] ❌ No state found for conversation:", conversationId);
+			return;
+		}
 
 		try {
+			console.log("[Conversation Manager] 🚦 Entering try block in streamResponse");
 			// Trim message history to keep conversation manageable
 			// Keep last 10 messages = 5 exchanges
 			const MAX_HISTORY_MESSAGES = 10;
@@ -164,6 +196,8 @@ export class ConversationManager {
 			}
 
 			console.log(`[Conversation Manager] 📡 Starting AI SDK stream with ${state.messages.length} messages in history (~${state.totalInputTokens + state.totalOutputTokens} tokens used so far)...`);
+
+			console.log("[Conversation Manager] 🔧 Creating streamText with anthropic provider:", typeof this.anthropic);
 
 			const result = streamText({
 				model: this.anthropic("claude-sonnet-4-5-20250929", {
@@ -195,20 +229,59 @@ Use your tools to:
 3. Search for common vulnerability patterns in API responses
 4. Verify proper authentication and authorization implementations
 
-Be thorough but accurate. Only report genuine security concerns.`,
+Be thorough but accurate. Only report genuine security concerns.
+
+IMPORTANT: Only use the exact tool names provided. If you try to use a tool that doesn't exist, you'll get an error.`,
 				messages: state.messages, // Use message history instead of single prompt
 				maxTokens: 1024 * 32,
-				maxSteps: 2, // Reduced from 5 to 2 - limits tool call rounds to prevent rate limits
+				maxSteps: 500, // Allow many tool call rounds for thorough investigation
 				tools: this.buildTools(tabId),
 				abortSignal: signal,
+				onStepFinish: (event) => {
+					console.log("[Conversation Manager] 📍 Step finished:", event);
+					// Log tool calls that failed
+					if (event.toolCalls) {
+						for (const toolCall of event.toolCalls) {
+							console.log("[Conversation Manager] 🔧 Tool call in step:", toolCall);
+						}
+					}
+				},
 			});
+
+			console.log("[Conversation Manager] 🌊 streamText result created, starting iteration...");
 
 			// Track assistant response
 			let assistantMessage = "";
 
 			// Stream the full text (includes tool execution results)
 			// The AI SDK will automatically execute tools and continue the conversation
+			console.log("[Conversation Manager] 🔄 About to iterate over fullStream...");
 			for await (const chunk of result.fullStream) {
+				console.log("[Conversation Manager] 📦 Received chunk:", chunk.type);
+
+				// Log full chunk for errors
+				if (chunk.type === "error") {
+					console.error("[Conversation Manager] 🚨 ERROR CHUNK:", chunk);
+					console.error("[Conversation Manager] Error details:", JSON.stringify(chunk, null, 2));
+
+					// Check if it's a "no such tool" error
+					if ((chunk as any).error?.name === "AI_NoSuchToolError") {
+						const toolName = (chunk as any).error?.toolName;
+						const availableTools = (chunk as any).error?.availableTools || [];
+
+						// Add error to chunks for UI
+						state.chunks.push({
+							type: "error",
+							data: `Tool "${toolName}" does not exist. Available tools: ${availableTools.join(", ")}`,
+							timestamp: Date.now(),
+						});
+
+						// Continue processing - don't throw, let the stream complete
+						console.warn("[Conversation Manager] ⚠️ Continuing despite tool error...");
+						continue;
+					}
+				}
+
 				if (chunk.type === "text-delta") {
 					assistantMessage += chunk.textDelta; // Accumulate for history
 					const chunkData: StreamChunk = {
@@ -221,6 +294,7 @@ Be thorough but accurate. Only report genuine security concerns.`,
 					console.log(`[Conversation Manager] 📝 Text delta (${chunk.textDelta.length} chars)`);
 				} else if (chunk.type === "tool-call") {
 					console.log(`[Conversation Manager] 🔧 Tool call: ${chunk.toolName} with args:`, chunk.args);
+					console.log(`[Conversation Manager] 🔧 Tool call details:`, JSON.stringify(chunk, null, 2));
 					const chunkData: StreamChunk = {
 						type: "tool-call",
 						data: {
@@ -233,6 +307,7 @@ Be thorough but accurate. Only report genuine security concerns.`,
 					state.chunks.push(chunkData);
 				} else if (chunk.type === "tool-result") {
 					console.log(`[Conversation Manager] ✅ Tool result: ${chunk.toolName}`, chunk.result);
+					console.log(`[Conversation Manager] ✅ Tool result details:`, JSON.stringify(chunk, null, 2));
 					const chunkData: StreamChunk = {
 						type: "tool-result",
 						data: {
@@ -245,6 +320,10 @@ Be thorough but accurate. Only report genuine security concerns.`,
 					state.chunks.push(chunkData);
 				} else if (chunk.type === "step-finish") {
 					console.log(`[Conversation Manager] 🔄 Step finished, continuing...`);
+				} else if (chunk.type === "finish") {
+					console.log(`[Conversation Manager] 🏁 Finish chunk received:`, JSON.stringify(chunk, null, 2));
+				} else {
+					console.log(`[Conversation Manager] ❓ Unknown chunk type:`, chunk.type, chunk);
 				}
 			}
 
@@ -255,18 +334,58 @@ Be thorough but accurate. Only report genuine security concerns.`,
 
 			console.log(`[Conversation Manager] 📊 Token usage: ${usage.promptTokens} in, ${usage.completionTokens} out (Total: ${state.totalInputTokens} + ${state.totalOutputTokens} = ${state.totalInputTokens + state.totalOutputTokens})`);
 
+			// Get all steps - each step represents a model turn + tool execution
+			const steps = await result.steps;
+			console.log(`[Conversation Manager] 🔄 Total steps:`, steps.length);
 
-			// Add assistant response to message history (only if not empty)
-			if (assistantMessage.trim().length > 0) {
-				state.messages.push({
-					role: "assistant",
-					content: assistantMessage,
-				});
-				console.log(`[Conversation Manager] 💾 Added assistant response to history (${assistantMessage.length} chars). Total messages: ${state.messages.length}`);
-				console.log(`[Conversation Manager] 📜 Full message history:`, state.messages.map(m => `${m.role}: ${m.content.slice(0, 80)}...`));
-			} else {
-				console.warn(`[Conversation Manager] ⚠️ Skipping empty assistant message`);
+			// Add messages for each step - put tool calls AND results in same assistant message
+			for (let i = 0; i < steps.length; i++) {
+				const step = steps[i];
+				console.log(`[Conversation Manager] 📍 Processing step ${i + 1}/${steps.length}`);
+
+				// Build ONE assistant message with text, tool calls, AND tool results
+				const assistantContent: any[] = [];
+
+				if (step?.text && step.text.trim().length > 0) {
+					assistantContent.push({
+						type: "text",
+						text: step.text,
+					});
+				}
+
+				// Add tool calls from this step
+				for (const toolCall of step?.toolCalls || []) {
+					assistantContent.push({
+						type: "tool-call",
+						toolCallId: toolCall.toolCallId,
+						toolName: toolCall.toolName,
+						args: toolCall.args,
+					});
+				}
+
+				// Add tool results to the SAME message
+				if (step?.toolResults && step.toolResults.length > 0) {
+					for (const toolResult of step.toolResults) {
+						assistantContent.push({
+							type: "tool-result",
+							toolCallId: toolResult.toolCallId,
+							toolName: toolResult.toolName,
+							result: toolResult.result,
+						});
+					}
+				}
+
+				// Add ONE assistant message with everything
+				if (assistantContent.length > 0) {
+					state.messages.push({
+						role: "assistant",
+						content: assistantContent.join("\n"),
+					});
+					console.log(`[Conversation Manager] 💾 Step ${i + 1}: Added assistant message with ${assistantContent.length} parts (text + tool calls + tool results)`);
+				}
 			}
+
+			console.log(`[Conversation Manager] 📜 Total messages in history:`, state.messages.length);
 
 			state.status = "completed";
 			state.chunks.push({
@@ -670,6 +789,17 @@ Be thorough but accurate. Only report genuine security concerns.`,
 							message: "Code execution failed. Check the error for details.",
 						};
 					}
+				},
+			}),
+
+			// Catch-all for common tool name variations/mistakes
+			get_network_stats: tool({
+				description: "[DEPRECATED] This tool does not exist. Use 'get_cache_statistics' instead.",
+				parameters: z.object({}),
+				execute: async () => {
+					return {
+						error: "Tool 'get_network_stats' does not exist. Please use 'get_cache_statistics' instead to get network request statistics.",
+					};
 				},
 			}),
 		};
