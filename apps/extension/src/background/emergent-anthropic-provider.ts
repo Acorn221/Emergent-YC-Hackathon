@@ -281,6 +281,8 @@ class EmergentAnthropicLanguageModel implements LanguageModelV1 {
 						completionTokens: 0,
 					};
 
+					let finishSent = false; // Track if we've sent finish chunk
+
 					// Track tool calls being built
 					const toolCalls = new Map<number, {
 						id: string;
@@ -372,14 +374,26 @@ class EmergentAnthropicLanguageModel implements LanguageModelV1 {
 									usage,
 									logprobs: undefined,
 								});
+								finishSent = true;
 							}
 						} else if (event === "message_stop") {
-							// Stream complete
-							console.log("[Emergent Provider] Stream complete");
+							// Stream complete - send finish if not already sent
+							console.log("[Emergent Provider] 🛑 message_stop received, finishSent:", finishSent);
+							if (!finishSent) {
+								console.log("[Emergent Provider] 🏁 Sending final finish chunk");
+								controller.enqueue({
+									type: "finish",
+									finishReason: "stop",
+									usage,
+									logprobs: undefined,
+								});
+							}
 						}
 					}
 
+					console.log("[Emergent Provider] 🏁 Finished parsing all SSE events, closing controller...");
 					controller.close();
+					console.log("[Emergent Provider] ✅ Controller closed!");
 				} catch (error) {
 					console.error("[Emergent Provider] 💥 Stream error:", error);
 					console.error("[Emergent Provider] Error type:", error instanceof Error ? error.constructor.name : typeof error);

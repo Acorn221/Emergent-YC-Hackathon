@@ -187,24 +187,13 @@ export class ConversationManager {
 		});
 	}
 
-	/**
-	 * Stream response from Anthropic API with manual tool execution.
-	 * 
-	 * This method:
-	 * 1. Calls Anthropic API directly (no AI SDK)
-	 * 2. Parses SSE stream manually
-	 * 3. Executes tools ourselves when model requests them
-	 * 4. Adds tool results as user messages (Anthropic format)
-	 * 5. Loops back to call API again with updated history
-	 * 6. Continues until model stops or max turns reached
-	 */
 	private async streamResponse(
 		conversationId: string,
 		tabId: number,
 		signal: AbortSignal
 	): Promise<void> {
 		console.log("[Conversation Manager] 🎯 streamResponse called for:", conversationId);
-
+		
 		const state = this.conversations.get(conversationId);
 		if (!state) {
 			console.error("[Conversation Manager] ❌ No state found for conversation:", conversationId);
@@ -224,7 +213,7 @@ export class ConversationManager {
 
 			// Get tool definitions
 			const tools = this.getToolDefinitions(tabId);
-
+			
 			const systemPrompt = `You are a security researcher analyzing web applications for vulnerabilities. Your goal is to identify ACTUAL security issues that could compromise user data, privacy, or system integrity.
 
 IMPORTANT - What constitutes a vulnerability:
@@ -258,7 +247,7 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 			let maxTurns = 500; // Safety limit
 			for (let turn = 0; turn < maxTurns; turn++) {
 				console.log(`[Conversation Manager] 🔄 Turn ${turn + 1}/${maxTurns}`);
-
+				
 				// Call Anthropic API
 				const response = await fetch(`${this.baseURL}/messages`, {
 					method: "POST",
@@ -336,7 +325,7 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 							try {
 								toolCalls[index].input = JSON.parse(jsonStr);
 								console.log(`[Conv Manager] 🔧 Tool call complete:`, toolCalls[index]);
-
+								
 								// Emit tool-call chunk
 								state.chunks.push({
 									type: "tool-call",
@@ -386,34 +375,34 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 					});
 				}
 
+				// Add assistant message to history
+				if (assistantContent.length > 0) {
+					state.messages.push({
+						role: "assistant",
+						content: assistantContent as any,
+					});
+					console.log(`[Conv Manager] 💾 Added assistant message with ${assistantContent.length} parts`);
+				}
+
 				// If no tool calls or stop_reason is end_turn, we're done
 				if (toolCalls.length === 0 || stopReason === "end_turn") {
-					// Add assistant message to history
-					if (assistantContent.length > 0) {
-						state.messages.push({
-							role: "assistant",
-							content: assistantContent as any,
-						});
-						console.log(`[Conv Manager] 💾 Added final assistant message with ${assistantContent.length} parts`);
-					}
 					console.log(`[Conv Manager] 🏁 Conversation complete (stop_reason: ${stopReason})`);
 					break;
 				}
 
 				// Execute tools
 				console.log(`[Conv Manager] 🔧 Executing ${toolCalls.length} tool calls...`);
+				const toolResults: any[] = [];
 				for (const toolCall of toolCalls) {
 					console.log(`[Conv Manager] ⚙️ Executing tool: ${toolCall.name}`);
 					try {
 						const result = await this.executeToolManually(toolCall.name, toolCall.input, tabId);
-
-						// Add tool result to the SAME assistant message
-						assistantContent.push({
+						toolResults.push({
 							type: "tool_result",
 							tool_use_id: toolCall.id,
 							content: typeof result === "string" ? result : JSON.stringify(result),
 						});
-
+						
 						// Emit tool-result chunk
 						state.chunks.push({
 							type: "tool-result",
@@ -427,7 +416,7 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 						console.log(`[Conv Manager] ✅ Tool result:`, result);
 					} catch (error: any) {
 						console.error(`[Conv Manager] ❌ Tool execution error:`, error);
-						assistantContent.push({
+						toolResults.push({
 							type: "tool_result",
 							tool_use_id: toolCall.id,
 							content: `Error: ${error.message}`,
@@ -436,13 +425,13 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 					}
 				}
 
-				// Add complete assistant message with text + tool_use + tool_result to history
-				if (assistantContent.length > 0) {
+				// Add tool results as user message
+				if (toolResults.length > 0) {
 					state.messages.push({
-						role: "assistant",
-						content: assistantContent as any,
+						role: "user",
+						content: toolResults as any,
 					});
-					console.log(`[Conv Manager] 💾 Added assistant message with ${assistantContent.length} parts (including tool results)`);
+					console.log(`[Conv Manager] 💾 Added user message with ${toolResults.length} tool results`);
 				}
 
 				// Loop back to call API again with updated history
@@ -481,6 +470,413 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 		}
 	}
 
+	private buildTools(tabId: number) {
+		return {
+			get_network_requests: tool({
+				description: "List network requests with summary info only. Returns ID, URL, method, status, type, content size, duration. Use get_request_details to fetch full headers/bodies/cookies for specific requests. This is much more efficient than fetching all data at once. KEEP LIMIT SMALL to avoid rate limits.",
+				parameters: z.object({
+					limit: z.number().optional().describe("Maximum number of requests to return (default: 10, max: 20)"),
+					offset: z.number().optional().describe("Starting offset for pagination (default: 0)"),
+				}),
+				execute: async ({ limit, offset }) => {
+					const requests = getEntriesForTab(tabId);
+					const limitNum = Math.min(limit || 10, 20); // Reduced from 20/50 to 10/20
+					const offsetNum = offset || 0;
+					const limited = requests.slice(offsetNum, offsetNum + limitNum);
+
+					return {
+						total: requests.length,
+						returned: limited.length,
+						offset: offsetNum,
+						hasMore: offsetNum + limitNum < requests.length,
+						requests: limited.map(r => ({
+							id: r.id,
+							url: r.request.url,
+							method: r.request.method,
+							status: r.response.status,
+							statusText: r.response.statusText,
+							contentType: r.response.contentType,
+							requestSize: r.request.body?.length || 0,
+							responseSize: r.response.body?.length || 0,
+							durationMs: r.timing.durationMs,
+							timestamp: r.request.timestamp,
+							hasError: r.metadata.hasError,
+							// Quick indicators
+							hasWebRequestData: r.metadata.hasWebRequestData,
+							hasCookies: (r.metadata.cookies?.length || 0) > 0,
+							hasAuth: !!(r.metadata.authHeaders?.authorization),
+						})),
+					};
+				},
+			}),
+
+			get_request_details: tool({
+				description: "Get complete details for a specific request by ID. Returns full headers, cookies, auth headers, and bodies (truncated to 500 chars by default to save tokens). Use get_request_body_chunk to fetch more body content if needed.",
+				parameters: z.object({
+					requestId: z.string().describe("Request ID from get_network_requests or search_requests"),
+					bodyPreviewSize: z.number().optional().describe("Size of body preview in characters (default: 500, max: 1500)"),
+				}),
+				execute: async ({ requestId, bodyPreviewSize }) => {
+					const request = getCacheEntry(requestId, tabId);
+
+					if (!request) {
+						return { error: `Request not found: ${requestId}` };
+					}
+
+					// Truncate bodies with configurable size - reduced to save tokens
+					const maxBodySize = Math.min(bodyPreviewSize || 500, 1500); // Reduced from 1000/2000
+					const requestBodySize = request.request.body?.length || 0;
+					const responseBodySize = request.response.body?.length || 0;
+
+					const requestBody = request.request.body
+						? requestBodySize > maxBodySize
+							? `${request.request.body.substring(0, maxBodySize)}\n... [truncated, ${requestBodySize} total chars, use get_request_body_chunk to fetch more]`
+							: request.request.body
+						: undefined;
+
+					const responseBody = request.response.body
+						? responseBodySize > maxBodySize
+							? `${request.response.body.substring(0, maxBodySize)}\n... [truncated, ${responseBodySize} total chars, use get_request_body_chunk to fetch more]`
+							: request.response.body
+						: undefined;
+
+					return {
+						id: request.id,
+						request: {
+							url: request.request.url,
+							method: request.request.method,
+							headers: request.request.headers,
+							body: requestBody,
+							bodySize: requestBodySize,
+							timestamp: new Date(request.request.timestamp).toISOString(),
+						},
+						response: {
+							status: request.response.status,
+							statusText: request.response.statusText,
+							headers: request.response.headers,
+							body: responseBody,
+							bodySize: responseBodySize,
+							contentType: request.response.contentType,
+						},
+						timing: {
+							durationMs: request.timing.durationMs,
+							startTime: request.timing.startTime,
+							endTime: request.timing.endTime,
+						},
+						metadata: {
+							requestType: request.metadata.requestType,
+							hasError: request.metadata.hasError,
+							errorMessage: request.metadata.errorMessage,
+							hasWebRequestData: request.metadata.hasWebRequestData,
+							cookies: request.metadata.cookies,
+							authHeaders: request.metadata.authHeaders,
+						},
+					};
+				},
+			}),
+
+			get_request_body_chunk: tool({
+				description: "Fetch a specific chunk of a request or response body. Use this when the body was truncated in get_request_details and you need to see more content.",
+				parameters: z.object({
+					requestId: z.string().describe("Request ID"),
+					bodyType: z.enum(["request", "response"]).describe("Which body to fetch: 'request' or 'response'"),
+					offset: z.number().optional().describe("Starting position in the body (default: 0)"),
+					length: z.number().optional().describe("Number of characters to fetch (default: 2000, max: 5000)"),
+				}),
+				execute: async ({ requestId, bodyType, offset = 0, length = 2000 }) => {
+					const request = getCacheEntry(requestId, tabId);
+
+					if (!request) {
+						return { error: `Request not found: ${requestId}` };
+					}
+
+					const body = bodyType === "request" ? request.request.body : request.response.body;
+
+					if (!body) {
+						return { error: `No ${bodyType} body available for this request` };
+					}
+
+					const maxLength = Math.min(length, 5000);
+					const chunk = body.substring(offset, offset + maxLength);
+					const totalSize = body.length;
+					const hasMore = offset + maxLength < totalSize;
+
+					return {
+						requestId,
+						bodyType,
+						offset,
+						chunkSize: chunk.length,
+						totalSize,
+						hasMore,
+						nextOffset: hasMore ? offset + maxLength : null,
+						chunk,
+					};
+				},
+			}),
+
+			search_requests: tool({
+				description: "Search and filter network requests by URL pattern, HTTP method, and/or status code range. Returns summary info (max 10 results to save tokens). Use get_request_details for full data on specific results.",
+				parameters: z.object({
+					url: z.string().optional().describe("URL substring to search for (case-insensitive, e.g., 'api', '/users', 'example.com')"),
+					method: z.string().optional().describe("HTTP method to filter by (GET, POST, PUT, DELETE, etc.)"),
+					minStatus: z.number().optional().describe("Minimum status code (inclusive, e.g., 200)"),
+					maxStatus: z.number().optional().describe("Maximum status code (inclusive, e.g., 299 for all 2xx)"),
+				}),
+				execute: async ({ url, method, minStatus, maxStatus }) => {
+					let results = getEntriesForTab(tabId);
+
+					// Apply URL filter
+					if (url) {
+						results = searchByUrl(url, tabId);
+					}
+
+					// Apply other filters
+					if (method || minStatus !== undefined || maxStatus !== undefined) {
+						results = filterEntries({
+							tabId,
+							method: method?.toUpperCase(),
+							minStatus,
+							maxStatus,
+						}).filter(r => !url || results.some(ur => ur.id === r.id));
+					}
+
+					return {
+						found: results.length,
+						filters: { url, method: method?.toUpperCase(), minStatus, maxStatus },
+						requests: results.slice(0, 10).map(r => ({ // Reduced from 20 to 10
+							id: r.id,
+							url: r.request.url,
+							method: r.request.method,
+							status: r.response.status,
+							statusText: r.response.statusText,
+							contentType: r.response.contentType,
+							responseSize: r.response.body?.length || 0,
+							durationMs: r.timing.durationMs,
+							hasWebRequestData: r.metadata.hasWebRequestData,
+							hasCookies: (r.metadata.cookies?.length || 0) > 0,
+							hasAuth: !!(r.metadata.authHeaders?.authorization),
+						})),
+					};
+				},
+			}),
+
+			search_request_content: tool({
+				description: "Search for text in request/response URLs, bodies, and headers. Finds requests containing specific data, field names, or values. Case-insensitive substring match. Max 10 results to save tokens.",
+				parameters: z.object({
+					query: z.string().describe("Search query - looks for this text in URLs, request bodies, and response bodies"),
+					searchIn: z.enum(["all", "url", "request_body", "response_body"]).optional().describe("Where to search: 'all' (default), 'url', 'request_body', or 'response_body'"),
+					limit: z.number().optional().describe("Max results to return (default: 10, max: 15)"),
+				}),
+				execute: async ({ query, searchIn = "all", limit = 10 }) => {
+					const allRequests = getEntriesForTab(tabId);
+					const queryLower = query.toLowerCase();
+					const matches: Array<{
+						request: typeof allRequests[0];
+						matchLocations: string[];
+					}> = [];
+
+					for (const req of allRequests) {
+						const locations: string[] = [];
+
+						// Search in URL
+						if ((searchIn === "all" || searchIn === "url") && req.request.url.toLowerCase().includes(queryLower)) {
+							locations.push("url");
+						}
+
+						// Search in request body
+						if ((searchIn === "all" || searchIn === "request_body") && req.request.body?.toLowerCase().includes(queryLower)) {
+							locations.push("request_body");
+						}
+
+						// Search in response body
+						if ((searchIn === "all" || searchIn === "response_body") && req.response.body?.toLowerCase().includes(queryLower)) {
+							locations.push("response_body");
+						}
+
+						if (locations.length > 0) {
+							matches.push({ request: req, matchLocations: locations });
+						}
+					}
+
+					const maxLimit = Math.min(limit, 15); // Cap at 15 instead of 20
+
+					return {
+						query,
+						searchIn,
+						found: matches.length,
+						results: matches.slice(0, maxLimit).map(m => ({
+							id: m.request.id,
+							url: m.request.request.url,
+							method: m.request.request.method,
+							status: m.request.response.status,
+							matchedIn: m.matchLocations,
+							contentType: m.request.response.contentType,
+							responseSize: m.request.response.body?.length || 0,
+						})),
+					};
+				},
+			}),
+
+			expose_request_data: tool({
+				description: "Inject cached request response data into the page as window.secshield.data. Makes response bodies available for JavaScript analysis in the page context without re-fetching. Data is injected as an array where each element contains {url, method, status, body, headers}.",
+				parameters: z.object({
+					requestIds: z.array(z.string()).describe("Array of request IDs to expose (from get_network_requests or search results)"),
+					variableName: z.string().optional().describe("Custom variable name under window.secshield (default: 'data'). Will be accessible as window.secshield.{name}"),
+				}),
+				execute: async ({ requestIds, variableName = "data" }) => {
+					const exposedData: Array<{
+						url: string;
+						method: string;
+						status: number;
+						body: unknown;
+						headers: Record<string, string>;
+					}> = [];
+
+					for (const requestId of requestIds) {
+						const request = getCacheEntry(requestId, tabId);
+						if (request) {
+							// Try to parse JSON responses
+							let parsedBody: unknown = request.response.body;
+							if (request.response.contentType?.includes("json") && request.response.body) {
+								try {
+									parsedBody = JSON.parse(request.response.body);
+								} catch {
+									// Keep as string if parse fails
+								}
+							}
+
+							exposedData.push({
+								url: request.request.url,
+								method: request.request.method,
+								status: request.response.status,
+								body: parsedBody,
+								headers: request.response.headers,
+							});
+						}
+					}
+
+					// Inject into page
+					try {
+						await chrome.scripting.executeScript({
+							target: { tabId },
+							world: "MAIN", // Inject into page's main world
+							func: (varName: string, data: typeof exposedData) => {
+								// Create secshield namespace if it doesn't exist
+								if (typeof (window as any).secshield === "undefined") {
+									(window as any).secshield = {};
+								}
+								// Inject data
+								(window as any).secshield[varName] = data;
+								console.log(`[SecShield] Exposed ${data.length} requests as window.secshield.${varName}`);
+							},
+							args: [variableName, exposedData],
+						});
+
+						return {
+							success: true,
+							exposedCount: exposedData.length,
+							accessPath: `window.secshield.${variableName}`,
+							message: `Injected ${exposedData.length} request responses. Access via window.secshield.${variableName}[index].body in the browser console.`,
+						};
+					} catch (error) {
+						return {
+							success: false,
+							error: error instanceof Error ? error.message : "Failed to inject data into page",
+						};
+					}
+				},
+			}),
+
+			get_cache_statistics: tool({
+				description: "Get summary statistics about cached network requests including total count, breakdown by method, status codes, request types, and how many have complete HTTP header data (cookies, auth).",
+				parameters: z.object({}),
+				execute: async () => {
+					const stats = getCacheStatistics(tabId);
+					const allRequests = getEntriesForTab(tabId);
+
+					// Count enriched requests
+					const enrichedCount = allRequests.filter(r => r.metadata.hasWebRequestData).length;
+					const withCookies = allRequests.filter(r => (r.metadata.cookies?.length || 0) > 0).length;
+					const withAuth = allRequests.filter(r => r.metadata.authHeaders?.authorization).length;
+
+					return {
+						totalRequests: stats.totalEntries,
+						byMethod: stats.byMethod,
+						byStatus: stats.byStatus,
+						byType: stats.byType,
+						errorCount: stats.errorCount,
+						enrichedWithWebRequest: enrichedCount,
+						requestsWithCookies: withCookies,
+						requestsWithAuth: withAuth,
+						enrichmentRate: stats.totalEntries > 0
+							? `${Math.round((enrichedCount / stats.totalEntries) * 100)}%`
+							: "0%",
+					};
+				},
+			}),
+
+			execute_javascript: tool({
+				description: "Execute JavaScript code in the page context (MAIN world) for security analysis. Can access DOM, cookies, localStorage, sessionStorage, global variables, and page functions. Returns the result and any console logs captured during execution. Useful for checking security configurations, extracting tokens, analyzing page state, and testing for vulnerabilities.",
+				parameters: z.object({
+					code: z.string().describe("JavaScript code to execute. Will be wrapped in async IIFE, so you can use await. Example: 'document.cookie' or 'localStorage.getItem(\"token\")'"),
+				}),
+				execute: async ({ code }) => {
+					try {
+						console.log(`[Tool: execute_javascript] 🔧 Executing code for tab ${tabId}:\n${code}`);
+						const result = await scriptExecutionManager.queueScriptExecution(tabId, code);
+
+						// Log the result to console for debugging
+						console.log(`[Tool: execute_javascript] ✅ Result:\n${result}`);
+
+						return {
+							success: true,
+							result,
+							message: "Code executed successfully. Result includes any console logs captured during execution.",
+						};
+					} catch (error) {
+						console.error(`[Tool: execute_javascript] ❌ Error:`, error);
+						return {
+							success: false,
+							error: error instanceof Error ? error.message : String(error),
+							message: "Code execution failed. Check the error for details.",
+						};
+					}
+				},
+			}),
+
+			// Catch-all for common tool name variations/mistakes
+			get_network_stats: tool({
+				description: "[DEPRECATED] This tool does not exist. Use 'get_cache_statistics' instead.",
+				parameters: z.object({}),
+				execute: async () => {
+					return {
+						error: "Tool 'get_network_stats' does not exist. Please use 'get_cache_statistics' instead to get network request statistics.",
+					};
+				},
+			}),
+		};
+	}
+
+	getUpdates(conversationId: string): {
+		chunks: StreamChunk[];
+		status: ConversationState["status"];
+		fullText: string;
+	} | null {
+		const state = this.conversations.get(conversationId);
+		if (!state) {
+			return null;
+		}
+
+		// Return and clear buffered chunks
+		const chunks = [...state.chunks];
+		state.chunks = [];
+
+		return {
+			chunks,
+			status: state.status,
+			fullText: state.fullText,
+		};
+	}
 
 	// Get Anthropic-format tool definitions
 	private getToolDefinitions(tabId: number) {
@@ -801,7 +1197,7 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 				const variableName = input.variableName || "data";
 				const requests = requestIds.map((id: string) => getCacheEntry(id, tabId)).filter(Boolean);
 
-				const data = requests.map((r: any) => ({
+				const data = requests.map(r => ({
 					url: r.request.url,
 					method: r.request.method,
 					status: r.response.status,
@@ -809,7 +1205,7 @@ IMPORTANT: Only use the exact tool names provided. If you try to use a tool that
 					headers: r.response.headers,
 				}));
 
-				await scriptExecutionManager.queueScriptExecution(
+				await scriptExecutionManager.executeScript(
 					tabId,
 					`window.secshield = window.secshield || {};
 window.secshield.${variableName} = ${JSON.stringify(data)};
@@ -829,7 +1225,7 @@ console.log("[SecShield] Exposed ${data.length} requests as window.secshield.${v
 			}
 
 			case "execute_javascript": {
-				const result = await scriptExecutionManager.queueScriptExecution(tabId, input.code);
+				const result = await scriptExecutionManager.executeScript(tabId, input.code);
 				return result;
 			}
 
@@ -842,23 +1238,6 @@ console.log("[SecShield] Exposed ${data.length} requests as window.secshield.${v
 			default:
 				throw new Error(`Unknown tool: ${toolName}`);
 		}
-	}
-
-	getUpdates(conversationId: string) {
-		const state = this.conversations.get(conversationId);
-		if (!state) {
-			return null;
-		}
-
-		const chunks = [...state.chunks];
-		// Clear chunks after reading (they've been consumed)
-		state.chunks = [];
-
-		return {
-			chunks,
-			status: state.status,
-			fullText: state.fullText,
-		};
 	}
 
 	abort(conversationId: string): void {
