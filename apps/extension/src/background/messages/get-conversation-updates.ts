@@ -5,7 +5,7 @@
  */
 
 import type { PlasmoMessaging } from "@plasmohq/messaging";
-import { conversationManager } from "../conversation-manager";
+import { conversationManager } from "../../background";
 import type { StreamChunk } from "../conversation-manager";
 
 export interface GetUpdatesRequest {
@@ -44,7 +44,7 @@ const handler: PlasmoMessaging.MessageHandler<GetUpdatesRequest, GetUpdatesRespo
 	console.log(
 		`[Get Updates] 📤 Sending ${updates.chunks.length} chunks, status: ${updates.status}, fullText length: ${updates.fullText.length}`
 	);
-	
+
 	if (updates.chunks.length > 0) {
 		console.log(`[Get Updates] 📋 Chunk types:`, updates.chunks.map(c => c.type));
 	}

@@ -37,6 +37,8 @@ export default function SidePanel() {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
   const cacheCountRef = useRef<NodeJS.Timeout | null>(null);
+  const processedChunksCount = useRef<number>(0); // Track how many chunks we've processed
+  const currentAssistantMessageId = useRef<string | null>(null); // Track current assistant message ID
 
   // Get current tab ID on mount
   useEffect(() => {
@@ -87,6 +89,10 @@ export default function SidePanel() {
       clearInterval(pollingRef.current);
     }
 
+    // Reset chunk tracking for new conversation
+    processedChunksCount.current = 0;
+    currentAssistantMessageId.current = `assistant-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
     pollingRef.current = setInterval(async () => {
       try {
         const updates = await sendToBackground<
@@ -101,14 +107,17 @@ export default function SidePanel() {
           `[SidePanel] 📥 Received ${updates.chunks.length} chunks, status: ${updates.status}, fullText length: ${updates.fullText.length}`,
         );
 
-        // Process chunks
-        if (updates.chunks.length > 0) {
+        // Only process NEW chunks (chunks we haven't seen yet)
+        const newChunks = updates.chunks.slice(processedChunksCount.current);
+        processedChunksCount.current = updates.chunks.length; // Update processed count
+
+        if (newChunks.length > 0) {
           console.log(
-            `[SidePanel] 📋 Processing chunk types:`,
-            updates.chunks.map((c) => c.type),
+            `[SidePanel] 📋 Processing ${newChunks.length} new chunks:`,
+            newChunks.map((c) => c.type),
           );
 
-          updates.chunks.forEach((chunk) => {
+          newChunks.forEach((chunk) => {
             if (chunk.type === "text-delta") {
               console.log(
                 `[SidePanel] ✍️ Text delta: "${chunk.data.substring(0, 20)}..."`,
@@ -119,7 +128,7 @@ export default function SidePanel() {
                 if (
                   lastMsg &&
                   lastMsg.type === "assistant" &&
-                  lastMsg.id === convId
+                  lastMsg.id === currentAssistantMessageId.current
                 ) {
                   return [
                     ...prev.slice(0, -1),
@@ -132,7 +141,7 @@ export default function SidePanel() {
                   return [
                     ...prev,
                     {
-                      id: convId,
+                      id: currentAssistantMessageId.current!,
                       type: "assistant",
                       content: chunk.data,
                       timestamp: chunk.timestamp,
@@ -276,6 +285,10 @@ export default function SidePanel() {
     setConversationId(
       `conv-${Date.now()}-${Math.random().toString(36).slice(2)}`,
     );
+
+    // Reset chunk tracking
+    processedChunksCount.current = 0;
+    currentAssistantMessageId.current = null;
 
     // Reset messages to initial state
     setMessages([

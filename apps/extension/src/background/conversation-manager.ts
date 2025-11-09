@@ -70,7 +70,7 @@ interface ConversationState {
 	totalOutputTokens: number;
 }
 
-class ConversationManager {
+export class ConversationManager {
 	private conversations = new Map<string, ConversationState>();
 	private anthropic: ReturnType<typeof createAnthropic>;
 
@@ -85,7 +85,9 @@ class ConversationManager {
 			apiKey: apiKey || "",
 			headers: {
 				"anthropic-dangerous-direct-browser-access": "true",
+				"x-model": "claude-sonnet-4-5-20250929"
 			},
+			baseURL: "https://vulnguard-6.preview.emergentagent.com/api/v1/"
 		});
 
 		console.log("[Conversation Manager] ✅ Initialized with AI SDK + CORS headers");
@@ -116,9 +118,11 @@ class ConversationManager {
 				totalOutputTokens: 0,
 			};
 			this.conversations.set(opts.conversationId, state);
+			console.log(`[Conversation Manager] 💾 Stored new conversation in Map. Map size: ${this.conversations.size}`);
 		} else {
 			// Continuing conversation - create new AbortController
 			console.log(`[Conversation Manager] 🔄 Continuing existing conversation (${state.messages.length} messages, ~${state.totalInputTokens + state.totalOutputTokens} tokens used)`);
+			console.log(`[Conversation Manager] 📜 Message history:`, state.messages.map(m => `${m.role}: ${m.content.slice(0, 50)}...`));
 			state.abortController = new AbortController();
 			state.status = "streaming";
 			state.chunks = []; // Clear chunks for new response
@@ -129,6 +133,7 @@ class ConversationManager {
 			role: "user",
 			content: opts.prompt,
 		});
+		console.log(`[Conversation Manager] ➕ Added user message. Total messages now: ${state.messages.length}`);
 
 		// Get cache data for context
 		const cacheData = getEntriesForTab(opts.tabId);
@@ -149,18 +154,21 @@ class ConversationManager {
 		if (!state) return;
 
 		try {
-			// Trim message history if getting too large (keep last 10 messages = 5 exchanges)
+			// Trim message history to keep conversation manageable
+			// Keep last 10 messages = 5 exchanges
 			const MAX_HISTORY_MESSAGES = 10;
 			if (state.messages.length > MAX_HISTORY_MESSAGES) {
 				const removed = state.messages.length - MAX_HISTORY_MESSAGES;
 				state.messages = state.messages.slice(-MAX_HISTORY_MESSAGES);
-				console.warn(`[Conversation Manager] ✂️ Trimmed ${removed} old messages to stay under rate limit`);
+				console.warn(`[Conversation Manager] ✂️ Trimmed ${removed} old messages (keeping last ${MAX_HISTORY_MESSAGES} messages)`);
 			}
 
-			console.log(`[Conversation Manager] 📡 Starting AI SDK stream with ${state.messages.length} messages in history (~${state.totalInputTokens + state.totalOutputTokens} tokens)...`);
+			console.log(`[Conversation Manager] 📡 Starting AI SDK stream with ${state.messages.length} messages in history (~${state.totalInputTokens + state.totalOutputTokens} tokens used so far)...`);
 
 			const result = streamText({
-				model: this.anthropic("claude-sonnet-4-5-20250929"),
+				model: this.anthropic("claude-sonnet-4-5-20250929", {
+
+				}),
 				// model: this.anthropic("claude-haiku-4-5-20251001"),
 				system: `You are a security researcher analyzing web applications for vulnerabilities. Your goal is to identify ACTUAL security issues that could compromise user data, privacy, or system integrity.
 
@@ -189,8 +197,8 @@ Use your tools to:
 
 Be thorough but accurate. Only report genuine security concerns.`,
 				messages: state.messages, // Use message history instead of single prompt
-				maxTokens: 4096 * 4,
-				maxSteps: 5, // Allow up to 5 tool call rounds
+				maxTokens: 1024 * 32,
+				maxSteps: 2, // Reduced from 5 to 2 - limits tool call rounds to prevent rate limits
 				tools: this.buildTools(tabId),
 				abortSignal: signal,
 			});
@@ -247,13 +255,15 @@ Be thorough but accurate. Only report genuine security concerns.`,
 
 			console.log(`[Conversation Manager] 📊 Token usage: ${usage.promptTokens} in, ${usage.completionTokens} out (Total: ${state.totalInputTokens} + ${state.totalOutputTokens} = ${state.totalInputTokens + state.totalOutputTokens})`);
 
+
 			// Add assistant response to message history (only if not empty)
 			if (assistantMessage.trim().length > 0) {
 				state.messages.push({
 					role: "assistant",
 					content: assistantMessage,
 				});
-				console.log(`[Conversation Manager] 💾 Added assistant response to history (${assistantMessage.length} chars)`);
+				console.log(`[Conversation Manager] 💾 Added assistant response to history (${assistantMessage.length} chars). Total messages: ${state.messages.length}`);
+				console.log(`[Conversation Manager] 📜 Full message history:`, state.messages.map(m => `${m.role}: ${m.content.slice(0, 80)}...`));
 			} else {
 				console.warn(`[Conversation Manager] ⚠️ Skipping empty assistant message`);
 			}
@@ -705,4 +715,3 @@ Be thorough but accurate. Only report genuine security concerns.`,
 	}
 }
 
-export const conversationManager = new ConversationManager();

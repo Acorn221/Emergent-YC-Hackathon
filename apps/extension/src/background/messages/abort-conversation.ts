@@ -5,7 +5,7 @@
  */
 
 import type { PlasmoMessaging } from "@plasmohq/messaging";
-import { conversationManager } from "../conversation-manager";
+import { conversationManager } from "../../background";
 
 export interface AbortConversationRequest {
 	conversationId: string;
@@ -20,7 +20,7 @@ const handler: PlasmoMessaging.MessageHandler<AbortConversationRequest, void> = 
 
 	console.log(`[Abort Conversation] 🛑 Aborting: ${req.body.conversationId}`);
 	conversationManager.abort(req.body.conversationId);
-	
+
 	res.send();
 };
 

@@ -6,6 +6,7 @@ import { createTRPCClient, httpBatchLink } from '@trpc/client';
 
 // Initialize webRequest listeners for header capture
 import "./webrequest-listener";
+import { ConversationManager } from "./conversation-manager";
 
 const API_URL = process.env.PLASMO_PUBLIC_API_URL || "http://localhost:3000/api/trpc";
 
@@ -65,3 +66,5 @@ browser.runtime.onInstalled.addListener((object) => {
 chrome.sidePanel
   .setPanelBehavior({ openPanelOnActionClick: true })
   .catch((error) => console.error(error));
+
+export const conversationManager = new ConversationManager();

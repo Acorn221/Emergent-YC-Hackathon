@@ -5,7 +5,7 @@
  */
 
 import type { PlasmoMessaging } from "@plasmohq/messaging";
-import { conversationManager } from "../conversation-manager";
+import { conversationManager } from "../../background";
 
 export interface StartConversationRequest {
 	conversationId: string;
